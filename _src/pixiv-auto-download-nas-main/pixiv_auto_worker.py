@@ -25,6 +25,10 @@ from urllib.parse import parse_qs
 import requests
 from pixivpy3 import AppPixivAPI
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pixiv_gallerydl_oauth import finish_flow as finish_pixiv_oauth
+from pixiv_gallerydl_oauth import start_flow as start_pixiv_oauth
+
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -41,6 +45,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "refresh_token_file": "/config/pixiv_refresh_token.txt",
     "refresh_token_env": "PIXIV_REFRESH_TOKEN",
     "refresh_token_file_env": "PIXIV_REFRESH_TOKEN_FILE",
+    "oauth_state_file": "/config/pixiv_oauth_state.json",
     "database": "/state/pixiv_auto.sqlite3",
     "download_dir": "/downloads",
     "image_dir": "/downloads/images",
@@ -819,6 +824,19 @@ class App:
         self.config = deep_merge(self.config, patch)
         save_config(self.config_path, self.config)
 
+    def oauth_state_file(self) -> Path:
+        return Path(str(self.config.get("oauth_state_file") or "/config/pixiv_oauth_state.json"))
+
+    def start_oauth(self) -> str:
+        login_url = start_pixiv_oauth(self.oauth_state_file())
+        self.log.write("已生成 Pixiv 登录链接，请打开链接登录后复制 callback URL/code。")
+        return login_url
+
+    def finish_oauth(self, callback_or_code: str) -> None:
+        token_file = Path(self.config["refresh_token_file"])
+        finish_pixiv_oauth(self.oauth_state_file(), token_file, callback_or_code, 30)
+        self.log.write("已通过 Pixiv OAuth 保存 refresh-token")
+
     def token_present(self) -> bool:
         env_name = str(self.config.get("refresh_token_env") or "PIXIV_REFRESH_TOKEN")
         if extract_refresh_token(str(os.environ.get(env_name, ""))):
@@ -983,10 +1001,18 @@ class App:
             self.stop_event.wait(5)
 
     def status(self) -> dict[str, Any]:
+        oauth_state = self.oauth_state_file()
+        login_url = ""
+        if oauth_state.exists():
+            try:
+                login_url = str(json.loads(oauth_state.read_text(encoding="utf-8")).get("login_url") or "")
+            except (OSError, json.JSONDecodeError):
+                login_url = ""
         return {
             "running": self.running,
             "next_run_at": datetime.fromtimestamp(self.next_run_at).isoformat() if self.next_run_at else "",
             "token_present": self.token_present(),
+            "oauth_login_url": login_url,
             "config": self.config,
             "progress": self.get_progress(),
             "runs": self.store.recent_runs(),
@@ -1079,6 +1105,15 @@ def html_page(app: App) -> str:
       <div class="help">
         获取方式：电脑执行 <code>gallery-dl oauth:pixiv</code>，复制命令行给出的登录链接，用浏览器打开；按 F12 打开开发者工具并切到 Network；登录 Pixiv；找到最后一个 <code>callback?state=...</code> 请求，复制 URL 里的 <code>code</code> 参数；回到命令行粘贴 code。成功后命令行会显示 <code>Your 'refresh-token' is</code>，把下一行粘贴到这里。code 大约 30 秒过期。
       </div>
+      <form method="post" action="/oauth-start">
+        <div class="actions"><button type="submit">生成 Pixiv 登录链接</button></div>
+      </form>
+      <div class="help" id="oauthHelp"></div>
+      <form method="post" action="/oauth-finish">
+        <label>粘贴 callback URL 或 code</label>
+        <textarea name="callback_or_code" placeholder="https://app-api.pixiv.net/web/v1/users/auth/pixiv/callback?...&code=..."></textarea>
+        <div class="actions"><button type="submit">换取并保存 Token</button></div>
+      </form>
       <form method="post" action="/token">
         <label>粘贴 refresh-token</label>
         <textarea name="refresh_token"></textarea>
@@ -1141,6 +1176,10 @@ def html_page(app: App) -> str:
         const data = await res.json();
         $("runningPill").textContent = `运行状态：${data.running ? "运行中" : "空闲"}`;
         $("tokenPill").textContent = `Token：${data.token_present ? "已保存" : "未保存"}`;
+        const oauthUrl = data.oauth_login_url || "";
+        $("oauthHelp").innerHTML = oauthUrl
+          ? `登录链接：<a href="${esc(oauthUrl)}" target="_blank" rel="noreferrer">${esc(oauthUrl)}</a><br>打开链接登录 Pixiv，然后在开发者工具 Network 里复制最后的 callback URL，粘贴到上面的输入框。`
+          : "点击生成 Pixiv 登录链接后，链接会显示在这里。";
         $("scheduleText").textContent = `下一次自动运行：${data.next_run_at || "未排程"}；周期：${data.run_interval_hours || 12} 小时`;
         updateProgress(data.progress || {});
         updateTables(data);
@@ -1197,6 +1236,23 @@ def make_handler(app: App):
                 return
             if self.path == "/reload":
                 app.reload_config()
+                redirect(self)
+                return
+            if self.path == "/oauth-start":
+                try:
+                    app.start_oauth()
+                except Exception as error:
+                    app.log.write(f"Pixiv 登录链接生成失败：{error}")
+                    app.log.write(traceback.format_exc())
+                redirect(self)
+                return
+            if self.path == "/oauth-finish":
+                callback_or_code = (form.get("callback_or_code") or [""])[0]
+                try:
+                    app.finish_oauth(callback_or_code)
+                except Exception as error:
+                    app.log.write(f"Pixiv OAuth 换取 Token 失败：{error}")
+                    app.log.write(traceback.format_exc())
                 redirect(self)
                 return
             if self.path == "/token":

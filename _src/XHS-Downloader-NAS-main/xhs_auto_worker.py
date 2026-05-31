@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import random
@@ -98,6 +99,70 @@ RUNTIME: dict[str, Any] = {
     "next_run_at": None,
     "last_error": None,
 }
+
+
+@contextlib.contextmanager
+def browser_lock():
+    lock_path = Path(os.environ.get("BROWSER_LOCK_PATH", "/tmp/nas-auto-browser.lock"))
+    wait_seconds = int(os.environ.get("BROWSER_LOCK_WAIT_SECONDS", "7200") or "7200")
+    poll_seconds = max(1, int(os.environ.get("BROWSER_LOCK_POLL_SECONDS", "10") or "10"))
+    deadline = time.time() + wait_seconds
+    fd: int | None = None
+    while fd is None:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, f"xhs-auto-worker pid={os.getpid()} at={time.time()}\n".encode("utf-8"))
+        except FileExistsError:
+            try:
+                if f"pid={os.getpid()}" in lock_path.read_text(encoding="utf-8", errors="ignore"):
+                    yield
+                    return
+            except OSError:
+                pass
+            if time.time() >= deadline:
+                raise TimeoutError(f"timed out waiting for browser lock: {lock_path}")
+            log(f"等待其他浏览器任务结束：{lock_path}")
+            time.sleep(poll_seconds)
+    try:
+        yield
+    finally:
+        if fd is not None:
+            os.close(fd)
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+class LockedPlaywright:
+    def __init__(self, manager: Any):
+        self.manager = manager
+        self.lock_cm: Any | None = None
+
+    async def __aenter__(self) -> Any:
+        self.lock_cm = browser_lock()
+        self.lock_cm.__enter__()
+        try:
+            return await self.manager.__aenter__()
+        except Exception:
+            self.lock_cm.__exit__(*sys.exc_info())
+            self.lock_cm = None
+            raise
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> Any:
+        try:
+            return await self.manager.__aexit__(exc_type, exc, tb)
+        finally:
+            if self.lock_cm is not None:
+                self.lock_cm.__exit__(exc_type, exc, tb)
+                self.lock_cm = None
+
+
+def locked_async_playwright(factory: Any) -> Any:
+    def create() -> LockedPlaywright:
+        return LockedPlaywright(factory())
+
+    return create
 
 
 def log(message: str) -> None:
@@ -1340,7 +1405,7 @@ def load_async_playwright(browser_config: dict[str, Any]) -> Any | None:
     try:
         from playwright.async_api import async_playwright
 
-        return async_playwright
+        return locked_async_playwright(async_playwright)
     except ImportError as error:
         log(f"Playwright 导入失败：{error}")
         log(f"Python 可执行文件：{sys.executable}")
@@ -1383,7 +1448,7 @@ def load_async_playwright(browser_config: dict[str, Any]) -> Any | None:
     try:
         from playwright.async_api import async_playwright
 
-        return async_playwright
+        return locked_async_playwright(async_playwright)
     except ImportError as error:
         log(f"安装后仍无法导入 Playwright：{error}")
         return None

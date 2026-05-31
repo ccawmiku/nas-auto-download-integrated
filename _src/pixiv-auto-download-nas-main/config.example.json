@@ -4,6 +4,7 @@
   "refresh_token_file": "/config/pixiv_refresh_token.txt",
   "refresh_token_env": "PIXIV_REFRESH_TOKEN",
   "refresh_token_file_env": "PIXIV_REFRESH_TOKEN_FILE",
+  "oauth_state_file": "/config/pixiv_oauth_state.json",
   "database": "/state/pixiv_auto.sqlite3",
   "download_dir": "/downloads",
   "image_dir": "/downloads/images",

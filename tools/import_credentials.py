@@ -12,6 +12,30 @@ DEFAULT_PIXIV_OUTPUT = Path(
     os.environ.get("PIXIV_REFRESH_TOKEN_OUTPUT", "/volume2/docker/pixiv-auto-download/config/pixiv_refresh_token.txt")
 )
 TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{30,}")
+XHS_COOKIE_NAMES = {
+    "a1",
+    "web_session",
+    "webId",
+    "gid",
+    "webBuild",
+    "unread",
+    "xsecappid",
+    "loadts",
+    "acw_tc",
+}
+X_COOKIE_NAMES = {
+    "auth_token",
+    "ct0",
+    "twid",
+    "guest_id",
+    "guest_id_ads",
+    "guest_id_marketing",
+    "personalization_id",
+    "kdt",
+    "lang",
+    "d_prefs",
+    "night_mode",
+}
 
 
 def read_text(path: Path) -> str:
@@ -27,6 +51,21 @@ def looks_like_cookie_export(text: str) -> bool:
     return "# Netscape HTTP Cookie File" in text or "\t" in text or "=" in text
 
 
+def cookie_header_names(text: str) -> set[str]:
+    names = set()
+    for line in text.splitlines():
+        line = line.strip()
+        if line.lower().startswith("cookie:"):
+            line = line.split(":", 1)[1]
+        for part in line.split(";"):
+            part = part.strip()
+            if "=" in part:
+                name = part.split("=", 1)[0].strip()
+                if name:
+                    names.add(name)
+    return names
+
+
 def detect_cookie_target(path: Path, text: str) -> str:
     name = path.name.lower()
     lowered = text.lower()
@@ -36,6 +75,11 @@ def detect_cookie_target(path: Path, text: str) -> str:
         return "x"
     if "pixiv" in name and "token" in name:
         return "pixiv_token"
+    names = cookie_header_names(text)
+    if names & XHS_COOKIE_NAMES:
+        return "xhs"
+    if {"auth_token", "ct0"} <= names:
+        return "x"
     return ""
 
 
@@ -49,6 +93,11 @@ def discover_bundle(bundle: Path) -> dict[str, Path]:
         target = detect_cookie_target(path, text)
         if target and target not in found:
             found[target] = path
+        names = cookie_header_names(text)
+        if names & XHS_COOKIE_NAMES and "xhs" not in found:
+            found["xhs"] = path
+        if {"auth_token", "ct0"} <= names and "x" not in found:
+            found["x"] = path
     return found
 
 
@@ -60,10 +109,33 @@ def write_secret(target: Path, value: str, dry_run: bool) -> Path:
     return target
 
 
+def filter_flat_cookie_header(text: str, names: set[str]) -> str:
+    if "# Netscape HTTP Cookie File" in text or "\t" in text or text.lstrip()[:1] in "[{":
+        return text
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if line.lower().startswith("cookie:"):
+            line = line.split(":", 1)[1]
+        for part in line.split(";"):
+            part = part.strip()
+            if "=" not in part:
+                continue
+            name, value = part.split("=", 1)
+            name = name.strip()
+            if name in names:
+                values[name] = value.strip()
+    return "; ".join(f"{name}={values[name]}" for name in sorted(names) if name in values)
+
+
 def import_cookie(label: str, source: Path, output: Path, dry_run: bool) -> str:
     text = read_text(source)
     if not looks_like_cookie_export(text):
         raise ValueError(f"{label} source does not look like a cookie export: {source}")
+    if label == "xhs":
+        text = filter_flat_cookie_header(text, XHS_COOKIE_NAMES)
+    elif label == "x":
+        text = filter_flat_cookie_header(text, X_COOKIE_NAMES)
     target = write_secret(output, text, dry_run)
     return f"{label}: {source} -> {target}"
 

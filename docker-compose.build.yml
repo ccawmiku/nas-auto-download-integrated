@@ -1,18 +1,7 @@
 version: "3.9"
 
 services:
-  xhs-auto-worker:
+  nas-auto-download:
     build:
-      context: ./_src/XHS-Downloader-NAS-main
-
-  x-auto-downloader:
-    build:
-      context: ./_src/x-auto-download-nas-main
-
-  pixiv-auto-downloader:
-    build:
-      context: ./_src/pixiv-auto-download-nas-main
-
-  pixiv-oauth:
-    build:
-      context: ./_src/pixiv-auto-download-nas-main
+      context: .
+      dockerfile: _integrated/Dockerfile

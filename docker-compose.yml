@@ -1,92 +1,30 @@
 version: "3.9"
 
-name: nas-auto-download
-
 services:
-  xhs-api:
-    image: joeanamier/xhs-downloader
-    container_name: xhs-api
+  nas-auto-download:
+    image: ${NAS_AUTO_IMAGE:-ghcr.io/ccawmiku/nas-auto-download-integrated:v1.1.0}
+    container_name: nas-auto-download
     ports:
-      - "${XHS_API_PORT:-13001}:5556"
+      - "${NAS_AUTO_PORT:-14001}:14001"
     volumes:
-      - ${XHS_VOLUME_DIR:-/volume2/docker/xhs-downloader/volumes}:/app/Volume
-      - ${XHS_DOWNLOAD_DIR:-/volume2/se-p/小红书}:/xhs
-    tty: true
-    stdin_open: true
-    command: python main.py api
-    restart: unless-stopped
-
-  xhs-auto-worker:
-    image: ${XHS_AUTO_WORKER_IMAGE:-ghcr.io/ccawmiku/nas-auto-download-integrated-xhs-auto-worker:v1.0.0}
-    container_name: xhs-auto-worker
-    depends_on:
-      - xhs-api
-    working_dir: /app
-    ports:
-      - "${XHS_UI_PORT:-13003}:8080"
-    volumes:
-      - ${XHS_CONFIG_DIR:-/volume2/docker/xhs-downloader/auto/config}:/config
-      - ${XHS_QUEUE_DIR:-/volume2/docker/xhs-downloader/auto/queue}:/queue
-      - ${XHS_STATE_DIR:-/volume2/docker/xhs-downloader/auto/state}:/state
+      - ${XHS_VOLUME_DIR:-/volume2/docker/xhs-downloader/volumes}:/opt/xhs-api/Volume
       - ${XHS_VOLUME_DIR:-/volume2/docker/xhs-downloader/volumes}:/xhs-volume
+      - ${XHS_DOWNLOAD_DIR:-/volume2/se-p/小红书}:/xhs
+      - ${XHS_CONFIG_DIR:-/volume2/docker/xhs-downloader/auto/config}:/config/xhs
+      - ${XHS_QUEUE_DIR:-/volume2/docker/xhs-downloader/auto/queue}:/queue/xhs
+      - ${XHS_STATE_DIR:-/volume2/docker/xhs-downloader/auto/state}:/state/xhs
+      - ${X_CONFIG_DIR:-/volume2/docker/x-auto-download/config}:/config/x
+      - ${X_STATE_DIR:-/volume2/docker/x-auto-download/state}:/state/x
+      - ${X_METADATA_DIR:-/volume2/docker/x-auto-download/downloads-metadata}:/downloads/x/downloads-metadata
+      - ${X_IMAGE_DIR:-/volume2/se-p/x-p}:/downloads/x/images
+      - ${X_VIDEO_DIR:-/volume1/se-v/x-v}:/downloads/x/videos
+      - ${PIXIV_CONFIG_DIR:-/volume2/docker/pixiv-auto-download/config}:/config/pixiv
+      - ${PIXIV_STATE_DIR:-/volume2/docker/pixiv-auto-download/state}:/state/pixiv
+      - ${PIXIV_DOWNLOAD_DIR:-/volume2/se-p/pixiv}:/downloads/pixiv
     environment:
       TZ: Asia/Shanghai
       PYTHONUNBUFFERED: "1"
-      XHS_COOKIE_FILE: /config/xhs_cookie.txt
-      XHS_USER_AGENT: ${XHS_USER_AGENT:-}
-    command: >
-      sh -c "test -f /config/config.json || cp /app/config.example.json /config/config.json;
-      python /app/xhs_auto_worker.py --config /config/config.json"
+      PORT: "14001"
+      BROWSER_LOCK_PATH: /tmp/nas-auto-browser.lock
+      BROWSER_LOCK_WAIT_SECONDS: "7200"
     restart: unless-stopped
-
-  x-auto-downloader:
-    image: ${X_AUTO_WORKER_IMAGE:-ghcr.io/ccawmiku/nas-auto-download-integrated-x-auto-worker:v1.0.0}
-    container_name: x-auto-downloader
-    ports:
-      - "${X_UI_PORT:-13004}:8080"
-    volumes:
-      - ${X_CONFIG_DIR:-/volume2/docker/x-auto-download/config}:/config
-      - ${X_STATE_DIR:-/volume2/docker/x-auto-download/state}:/state
-      - ${X_METADATA_DIR:-/volume2/docker/x-auto-download/downloads-metadata}:/downloads/downloads-metadata
-      - ${X_IMAGE_DIR:-/volume2/se-p/x-p}:/downloads/images
-      - ${X_VIDEO_DIR:-/volume1/se-v/x-v}:/downloads/videos
-    environment:
-      TZ: Asia/Shanghai
-      PYTHONUNBUFFERED: "1"
-      X_COOKIE_FILE: /config/x_cookies.txt
-    command: >
-      sh -c "test -f /config/config.json || cp /app/config.example.json /config/config.json;
-      python /app/x_auto_worker.py --config /config/config.json"
-    restart: unless-stopped
-
-  pixiv-auto-downloader:
-    image: ${PIXIV_AUTO_WORKER_IMAGE:-ghcr.io/ccawmiku/nas-auto-download-integrated-pixiv-auto-worker:v1.0.0}
-    container_name: pixiv-auto-downloader
-    ports:
-      - "${PIXIV_UI_PORT:-13005}:8080"
-    volumes:
-      - ${PIXIV_CONFIG_DIR:-/volume2/docker/pixiv-auto-download/config}:/config
-      - ${PIXIV_STATE_DIR:-/volume2/docker/pixiv-auto-download/state}:/state
-      - ${PIXIV_DOWNLOAD_DIR:-/volume2/se-p/pixiv}:/downloads
-    environment:
-      TZ: Asia/Shanghai
-      PYTHONUNBUFFERED: "1"
-      PIXIV_REFRESH_TOKEN_FILE: /config/pixiv_refresh_token.txt
-    command: >
-      sh -c "test -f /config/config.json || cp /app/config.example.json /config/config.json;
-      python /app/pixiv_auto_worker.py --config /config/config.json"
-    restart: unless-stopped
-
-  pixiv-oauth:
-    image: ${PIXIV_AUTO_WORKER_IMAGE:-ghcr.io/ccawmiku/nas-auto-download-integrated-pixiv-auto-worker:v1.0.0}
-    profiles:
-      - tools
-    volumes:
-      - ${PIXIV_CONFIG_DIR:-/volume2/docker/pixiv-auto-download/config}:/config
-    environment:
-      TZ: Asia/Shanghai
-      PYTHONUNBUFFERED: "1"
-    command: >
-      python /app/pixiv_gallerydl_oauth.py --interactive
-      --state-file /config/pixiv_oauth_state.json
-      --output /config/pixiv_refresh_token.txt
