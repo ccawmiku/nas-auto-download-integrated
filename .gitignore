@@ -1,0 +1,7 @@
+.env
+secrets/
+xhs/
+x/
+pixiv/
+**/__pycache__/
+*.py[cod]
