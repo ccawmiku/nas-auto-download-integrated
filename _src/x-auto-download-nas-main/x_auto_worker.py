@@ -405,7 +405,7 @@ class Store:
 
     def is_done(self, tweet_id: str) -> bool:
         row = self.get_tweet(tweet_id)
-        return bool(row and row["status"] == "done" and self._row_has_existing_media(row))
+        return bool(row and row["status"] == "done")
 
     def should_download(self, tweet_id: str, retry_failed: bool, max_attempts: int) -> bool:
         row = self.get_tweet(tweet_id)

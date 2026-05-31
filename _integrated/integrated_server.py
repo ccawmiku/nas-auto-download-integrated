@@ -5,6 +5,7 @@ import html
 import http.client
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -229,6 +230,32 @@ def import_all_cookie(text: str) -> dict[str, Any]:
     return result
 
 
+def read_import_cookie_payload(handler: BaseHTTPRequestHandler, length: int) -> str:
+    body = handler.rfile.read(length)
+    content_type = handler.headers.get("Content-Type", "")
+    if "multipart/form-data" not in content_type:
+        form = parse_qs(body.decode("utf-8", errors="replace"))
+        return (form.get("cookie_text") or [""])[0]
+
+    match = re.search(r"boundary=(?:\"([^\"]+)\"|([^;]+))", content_type)
+    if not match:
+        return ""
+    boundary = (match.group(1) or match.group(2)).encode("utf-8")
+    marker = b"--" + boundary
+    values: list[str] = []
+    for part in body.split(marker):
+        if b"\r\n\r\n" not in part:
+            continue
+        header_bytes, value = part.split(b"\r\n\r\n", 1)
+        headers = header_bytes.decode("utf-8", errors="replace")
+        value = value.removesuffix(b"\r\n").removesuffix(b"--").strip()
+        if 'name="cookie_text"' in headers or 'name="cookie_file"' in headers:
+            decoded = value.decode("utf-8-sig", errors="replace").strip()
+            if decoded:
+                values.append(decoded)
+    return "\n".join(values)
+
+
 def service_status() -> dict[str, Any]:
     return {
         "processes": [
@@ -253,7 +280,7 @@ body{{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;backgroun
 header{{background:#111827;color:#fff;padding:18px 24px}} main{{max-width:1100px;margin:0 auto;padding:20px;display:grid;gap:16px}}
 .grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}} .card,section{{background:#fff;border:1px solid #d8dee9;border-radius:8px;padding:16px}}
 .card{{display:grid;gap:6px;text-decoration:none;color:inherit}} .card strong{{font-size:18px}} .card span,.muted{{color:#64748b}}
-textarea{{width:100%;min-height:140px;box-sizing:border-box;border:1px solid #d8dee9;border-radius:6px;padding:10px;font:inherit}} button{{border:0;border-radius:6px;background:#111827;color:white;padding:9px 14px;cursor:pointer}}
+textarea,input[type=file]{{width:100%;box-sizing:border-box;border:1px solid #d8dee9;border-radius:6px;padding:10px;font:inherit;background:white}} textarea{{min-height:140px}} button{{border:0;border-radius:6px;background:#111827;color:white;padding:9px 14px;cursor:pointer}}
 pre{{background:#0f172a;color:#dbeafe;padding:12px;border-radius:6px;overflow:auto;max-height:360px;white-space:pre-wrap}}
 .ok{{background:#ecfdf5;border-color:#bbf7d0}}
 </style></head><body>
@@ -261,8 +288,11 @@ pre{{background:#0f172a;color:#dbeafe;padding:12px;border-radius:6px;overflow:au
 <main>
 {f'<section class="ok">{html.escape(message)}</section>' if message else ''}
 <section><h2>服务入口</h2><div class="grid">{cards}</div><p class="muted">无头浏览器锁：{lock}</p></section>
-<section><h2>一次性导入 Cookie</h2><p class="muted">粘贴浏览器插件导出的全站 Cookie header，会自动拆出小红书和 X 所需 Cookie。Pixiv 请进入 Pixiv 页面生成登录链接并换取 Token。</p>
-<form method="post" action="/import-cookies"><textarea name="cookie_text" placeholder="name=value; name2=value2; ..."></textarea><p><button type="submit">导入小红书和 X Cookie</button></p></form></section>
+<section><h2>一次性导入 Cookie</h2><p class="muted">粘贴或上传浏览器插件导出的全站 Cookie。服务器只读取内容并拆出小红书/X 所需字段，不保存原始上传文件。Pixiv 请进入 Pixiv 页面生成登录链接并换取 Token。</p>
+<form method="post" action="/import-cookies" enctype="multipart/form-data">
+<label class="muted">上传 cookies.txt</label><input type="file" name="cookie_file" accept=".txt,.cookies,text/plain">
+<label class="muted">或直接粘贴 Cookie 内容</label><textarea name="cookie_text" placeholder="name=value; name2=value2; ..."></textarea>
+<p><button type="submit">导入小红书和 X Cookie</button></p></form></section>
 <section><h2>最近日志</h2><pre>{html.escape(chr(10).join(log_lines[-80:]))}</pre></section>
 </main></body></html>"""
     return body.encode("utf-8")
@@ -281,6 +311,13 @@ def rewrite_html(prefix: str, body: bytes, content_type: str) -> bytes:
     }
     for src, dst in replacements.items():
         text = text.replace(src, dst)
+    back = (
+        '<div style="position:sticky;top:0;z-index:9999;background:#111827;color:#fff;'
+        'padding:8px 14px;font:14px system-ui,-apple-system,Segoe UI,sans-serif">'
+        '<a href="/" style="color:#fff;text-decoration:none">← 返回统一主页</a></div>'
+    )
+    if "<body>" in text and "返回统一主页" not in text:
+        text = text.replace("<body>", "<body>" + back, 1)
     return text.encode("utf-8")
 
 
@@ -348,8 +385,7 @@ class Handler(BaseHTTPRequestHandler):
         split = urlsplit(self.path)
         if split.path == "/import-cookies":
             length = int(self.headers.get("Content-Length", "0") or 0)
-            form = parse_qs(self.rfile.read(length).decode("utf-8", errors="replace"))
-            result = import_all_cookie((form.get("cookie_text") or [""])[0])
+            result = import_all_cookie(read_import_cookie_payload(self, length))
             message = "导入完成：" + "；".join(
                 f"{SERVICES[key]['name']} {value['count']} 项 -> {value['output']}" for key, value in result.items()
             )

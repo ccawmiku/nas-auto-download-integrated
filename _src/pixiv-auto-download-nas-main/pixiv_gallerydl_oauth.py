@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import requests
+from requests import RequestException
 from gallery_dl.extractor.pixiv import PixivAppAPI
 
 
@@ -79,7 +80,18 @@ def exchange_code(code: str, verifier: str, timeout: int = 30) -> dict:
         "include_policy": "true",
         "redirect_uri": REDIRECT_URI,
     }
-    response = requests.post(TOKEN_URL, headers={"User-Agent": USER_AGENT}, data=data, timeout=timeout)
+    last_error: RequestException | None = None
+    for _attempt in range(2):
+        try:
+            response = requests.post(TOKEN_URL, headers={"User-Agent": USER_AGENT}, data=data, timeout=timeout)
+            break
+        except RequestException as error:
+            last_error = error
+    else:
+        raise RuntimeError(
+            "无法连接 Pixiv OAuth 服务。通常是 NAS 网络到 oauth.secure.pixiv.net 被重置或超时；"
+            "请重新生成登录链接后再试，或检查 NAS 网络/代理/DNS。"
+        ) from last_error
     try:
         payload = response.json()
     except ValueError as error:

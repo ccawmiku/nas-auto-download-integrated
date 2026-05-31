@@ -27,6 +27,7 @@ from pixivpy3 import AppPixivAPI
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from pixiv_gallerydl_oauth import finish_flow as finish_pixiv_oauth
+from pixiv_gallerydl_oauth import extract_code as extract_code_like
 from pixiv_gallerydl_oauth import start_flow as start_pixiv_oauth
 
 
@@ -790,6 +791,7 @@ class App:
         self.stop_event = threading.Event()
         self.next_run_at = 0.0
         self.last_run_message = ""
+        self.oauth_message = ""
         self.progress_lock = threading.Lock()
         self.progress = self.empty_progress()
 
@@ -829,12 +831,16 @@ class App:
 
     def start_oauth(self) -> str:
         login_url = start_pixiv_oauth(self.oauth_state_file())
+        self.oauth_message = "已生成登录链接。请打开链接登录 Pixiv，然后复制 callback URL/code 粘贴回来。"
         self.log.write("已生成 Pixiv 登录链接，请打开链接登录后复制 callback URL/code。")
         return login_url
 
     def finish_oauth(self, callback_or_code: str) -> None:
+        if not extract_code_like(callback_or_code):
+            raise ValueError("请粘贴 Pixiv callback URL，或只粘贴 URL 里的 code 参数。")
         token_file = Path(self.config["refresh_token_file"])
         finish_pixiv_oauth(self.oauth_state_file(), token_file, callback_or_code, 30)
+        self.oauth_message = "Token 换取成功，已保存。建议点击“测试 Token”确认账号可用。"
         self.log.write("已通过 Pixiv OAuth 保存 refresh-token")
 
     def token_present(self) -> bool:
@@ -1013,6 +1019,7 @@ class App:
             "next_run_at": datetime.fromtimestamp(self.next_run_at).isoformat() if self.next_run_at else "",
             "token_present": self.token_present(),
             "oauth_login_url": login_url,
+            "oauth_message": self.oauth_message,
             "config": self.config,
             "progress": self.get_progress(),
             "runs": self.store.recent_runs(),
@@ -1109,6 +1116,10 @@ def html_page(app: App) -> str:
         <div class="actions"><button type="submit">生成 Pixiv 登录链接</button></div>
       </form>
       <div class="help" id="oauthHelp"></div>
+      <div class="help" id="oauthMessage"></div>
+      <div class="help">
+        详细步骤：1. 点击生成登录链接；2. 在新标签页打开链接并登录 Pixiv；3. 按 F12 打开开发者工具并切到 Network；4. 找到最后一个包含 callback 的请求；5. 复制整个 callback URL，或只复制 URL 里的 code 参数；6. 回到这里粘贴并保存。code 过期很快，如果失败请重新生成链接。
+      </div>
       <form method="post" action="/oauth-finish">
         <label>粘贴 callback URL 或 code</label>
         <textarea name="callback_or_code" placeholder="https://app-api.pixiv.net/web/v1/users/auth/pixiv/callback?...&code=..."></textarea>
@@ -1180,6 +1191,7 @@ def html_page(app: App) -> str:
         $("oauthHelp").innerHTML = oauthUrl
           ? `登录链接：<a href="${esc(oauthUrl)}" target="_blank" rel="noreferrer">${esc(oauthUrl)}</a><br>打开链接登录 Pixiv，然后在开发者工具 Network 里复制最后的 callback URL，粘贴到上面的输入框。`
           : "点击生成 Pixiv 登录链接后，链接会显示在这里。";
+        $("oauthMessage").textContent = data.oauth_message || "";
         $("scheduleText").textContent = `下一次自动运行：${data.next_run_at || "未排程"}；周期：${data.run_interval_hours || 12} 小时`;
         updateProgress(data.progress || {});
         updateTables(data);
@@ -1242,6 +1254,7 @@ def make_handler(app: App):
                 try:
                     app.start_oauth()
                 except Exception as error:
+                    app.oauth_message = f"登录链接生成失败：{error}"
                     app.log.write(f"Pixiv 登录链接生成失败：{error}")
                     app.log.write(traceback.format_exc())
                 redirect(self)
@@ -1250,7 +1263,9 @@ def make_handler(app: App):
                 callback_or_code = (form.get("callback_or_code") or [""])[0]
                 try:
                     app.finish_oauth(callback_or_code)
+                    app.start_token_test_thread()
                 except Exception as error:
+                    app.oauth_message = f"Token 换取失败：{error}"
                     app.log.write(f"Pixiv OAuth 换取 Token 失败：{error}")
                     app.log.write(traceback.format_exc())
                 redirect(self)

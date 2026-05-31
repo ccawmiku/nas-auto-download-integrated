@@ -24,7 +24,7 @@ docker compose up -d
 默认镜像：
 
 ```text
-ghcr.io/ccawmiku/nas-auto-download-integrated:v1.1.0
+ghcr.io/ccawmiku/nas-auto-download-integrated:v1.1.1
 ```
 
 ## NAS 路径
@@ -57,8 +57,10 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.1.0
 
 - 首页可以进入小红书、X、Pixiv 三个原有管理页面
 - 首页可以粘贴浏览器插件导出的一整份全站 Cookie header
+- 首页也可以上传 `cookies.txt`，只解析内容，不保存原始上传文件
 - 导入器会自动拆出小红书和 X 所需 Cookie
 - Pixiv 页面内可以生成登录链接、粘贴 callback/code、换取 refresh-token
+- 子页面顶部会显示“返回统一主页”
 
 ## 浏览器性能保护
 
@@ -67,6 +69,7 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.1.0
 - 同一时间只允许一个无头浏览器采集任务运行
 - 另一个任务会等待，默认最长等待 7200 秒
 - 可通过 `BROWSER_LOCK_WAIT_SECONDS` 调整
+- X 的“连续已下载停止”按数据库 `done` 状态判断，迁移到单容器后不会因为旧文件路径变化而一直下翻
 
 ## 停旧容器后迁移
 
