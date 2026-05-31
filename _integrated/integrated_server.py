@@ -225,7 +225,14 @@ def import_all_cookie(text: str) -> dict[str, Any]:
         if selected:
             output: Path = rule["output"]
             output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text("; ".join(f"{name}={value}" for name, value in selected.items()) + "\n", encoding="utf-8")
+            if key == "x":
+                expires = int(time.time()) + 86400 * 180
+                lines = ["# Netscape HTTP Cookie File"]
+                for name, value in selected.items():
+                    lines.append(f".x.com\tTRUE\t/\tTRUE\t{expires}\t{name}\t{value}")
+                output.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            else:
+                output.write_text("; ".join(f"{name}={value}" for name, value in selected.items()) + "\n", encoding="utf-8")
         result[key] = {"count": len(selected), "output": str(rule["output"]), "names": sorted(selected)}
     return result
 

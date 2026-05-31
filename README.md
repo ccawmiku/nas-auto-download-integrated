@@ -24,7 +24,7 @@ docker compose up -d
 默认镜像：
 
 ```text
-ghcr.io/ccawmiku/nas-auto-download-integrated:v1.1.1
+ghcr.io/ccawmiku/nas-auto-download-integrated:v1.1.2
 ```
 
 ## NAS 路径

@@ -128,6 +128,22 @@ def filter_flat_cookie_header(text: str, names: set[str]) -> str:
     return "; ".join(f"{name}={values[name]}" for name in sorted(names) if name in values)
 
 
+def cookie_header_to_netscape(text: str, domain: str = ".x.com") -> str:
+    if "# Netscape HTTP Cookie File" in text or "\t" in text or text.lstrip()[:1] in "[{":
+        return text
+    expires = 4102444800
+    lines = ["# Netscape HTTP Cookie File"]
+    for part in text.split(";"):
+        part = part.strip()
+        if "=" not in part:
+            continue
+        name, value = part.split("=", 1)
+        name = name.strip()
+        if name:
+            lines.append(f"{domain}\tTRUE\t/\tTRUE\t{expires}\t{name}\t{value.strip()}")
+    return "\n".join(lines)
+
+
 def import_cookie(label: str, source: Path, output: Path, dry_run: bool) -> str:
     text = read_text(source)
     if not looks_like_cookie_export(text):
@@ -136,6 +152,7 @@ def import_cookie(label: str, source: Path, output: Path, dry_run: bool) -> str:
         text = filter_flat_cookie_header(text, XHS_COOKIE_NAMES)
     elif label == "x":
         text = filter_flat_cookie_header(text, X_COOKIE_NAMES)
+        text = cookie_header_to_netscape(text, ".x.com")
     target = write_secret(output, text, dry_run)
     return f"{label}: {source} -> {target}"
 

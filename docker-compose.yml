@@ -2,7 +2,7 @@ version: "3.9"
 
 services:
   nas-auto-download:
-    image: ${NAS_AUTO_IMAGE:-ghcr.io/ccawmiku/nas-auto-download-integrated:v1.1.1}
+    image: ${NAS_AUTO_IMAGE:-ghcr.io/ccawmiku/nas-auto-download-integrated:v1.1.2}
     container_name: nas-auto-download
     ports:
       - "${NAS_AUTO_PORT:-14001}:14001"

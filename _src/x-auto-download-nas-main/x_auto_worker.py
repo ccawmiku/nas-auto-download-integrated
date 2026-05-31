@@ -741,7 +741,12 @@ def cookie_file_for_tools(config: dict[str, Any]) -> Path:
     cookie_text, source = load_cookie_source(config)
     configured_path = Path(str(config.get("cookie_file") or "/config/x_cookies.txt"))
     if source == str(configured_path):
-        return configured_path
+        try:
+            first_line = configured_path.read_text(encoding="utf-8-sig", errors="replace").splitlines()[0]
+            if "# Netscape HTTP Cookie File" in first_line:
+                return configured_path
+        except (IndexError, OSError):
+            pass
     runtime_path = configured_path.with_name(f"{configured_path.stem}.runtime{configured_path.suffix or '.txt'}")
     write_cookie_file(runtime_path, cookie_text)
     return runtime_path
