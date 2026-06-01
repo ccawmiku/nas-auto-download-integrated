@@ -103,7 +103,7 @@ def ensure_configs() -> None:
         Path("/config/xhs/config.json"),
         ROOT / "xhs" / "config.example.json",
         {
-            "api_url": "http://127.0.0.1:5556/xhs/detail",
+            "api_url": os.environ.get("XHS_API_URL", "http://xhs-api:5556/xhs/detail"),
             "database": "/state/xhs/xhs_auto.sqlite3",
             "secrets_path": "/state/xhs/secrets.json",
             "cookie_file": "/config/xhs/xhs_cookie.txt",
@@ -194,8 +194,7 @@ def wait_for_port(name: str, host: str, port: int, timeout_seconds: int = 90) ->
 
 def start_children() -> None:
     ensure_configs()
-    start_process("xhs-api", [sys.executable, "main.py", "api"], "/app")
-    wait_for_port("xhs-api", "127.0.0.1", 5556)
+    wait_for_port("xhs-api", os.environ.get("XHS_API_HOST", "xhs-api"), int(os.environ.get("XHS_API_PORT", "5556")))
     start_process(
         "xhs-worker",
         [sys.executable, "/opt/nas-auto/xhs/xhs_auto_worker.py", "--config", "/config/xhs/config.json"],

@@ -24,7 +24,29 @@
     "cookie_file": "/config/xhs_cookie.txt",
     "user_agent_env": "XHS_USER_AGENT",
     "cookie_secret_key": "xhs_cookie",
-    "user_agent_secret_key": "xhs_user_agent"
+    "user_agent_secret_key": "xhs_user_agent",
+    "defaults": {
+      "mapping_data": {},
+      "work_path": "/xhs",
+      "folder_name": "Download",
+      "name_format": "发布时间 作者昵称 作品标题",
+      "proxy": null,
+      "timeout": 10,
+      "chunk": 2097152,
+      "max_retry": 5,
+      "record_data": true,
+      "image_format": "PNG",
+      "folder_mode": true,
+      "language": "zh_CN",
+      "image_download": true,
+      "video_download": true,
+      "live_download": true,
+      "download_record": true,
+      "author_archive": false,
+      "write_mtime": false,
+      "video_preference": "resolution",
+      "script_server": false
+    }
   },
   "stop_marker": {
     "enabled": true,

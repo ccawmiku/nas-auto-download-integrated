@@ -1,4 +1,4 @@
-FROM joeanamier/xhs-downloader
+FROM mcr.microsoft.com/playwright/python:v1.56.0-noble
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -12,8 +12,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY _integrated/requirements.txt /tmp/integrated-requirements.txt
-RUN python -m pip install --no-cache-dir -r /tmp/integrated-requirements.txt \
-    && python -m playwright install --with-deps chromium
+RUN python -m pip install --no-cache-dir -r /tmp/integrated-requirements.txt
 
 COPY _src/XHS-Downloader-NAS-main /opt/nas-auto/xhs
 COPY _src/x-auto-download-nas-main /opt/nas-auto/x

@@ -1,30 +1,37 @@
 version: "3.9"
 
 services:
-  nas-auto-download:
-    image: ${NAS_AUTO_IMAGE:-ghcr.io/ccawmiku/nas-auto-download-integrated:v1.1.3}
-    container_name: nas-auto-download
+  xhs-api:
+    image: joeanamier/xhs-downloader
+    container_name: xhs-api
     ports:
-      - "${NAS_AUTO_PORT:-14001}:14001"
+      - "13001:5556"
     volumes:
-      - ${XHS_VOLUME_DIR:-/volume2/docker/xhs-downloader/volumes}:/app/Volume
-      - ${XHS_VOLUME_DIR:-/volume2/docker/xhs-downloader/volumes}:/xhs-volume
-      - ${XHS_DOWNLOAD_DIR:-/volume2/se-p/小红书}:/xhs
-      - ${XHS_CONFIG_DIR:-/volume2/docker/xhs-downloader/auto/config}:/config/xhs
-      - ${XHS_QUEUE_DIR:-/volume2/docker/xhs-downloader/auto/queue}:/queue/xhs
-      - ${XHS_STATE_DIR:-/volume2/docker/xhs-downloader/auto/state}:/state/xhs
-      - ${X_CONFIG_DIR:-/volume2/docker/x-auto-download/config}:/config/x
-      - ${X_STATE_DIR:-/volume2/docker/x-auto-download/state}:/state/x
-      - ${X_METADATA_DIR:-/volume2/docker/x-auto-download/downloads-metadata}:/downloads/x/downloads-metadata
-      - ${X_IMAGE_DIR:-/volume2/se-p/x-p}:/downloads/x/images
-      - ${X_VIDEO_DIR:-/volume1/se-v/x-v}:/downloads/x/videos
-      - ${PIXIV_CONFIG_DIR:-/volume2/docker/pixiv-auto-download/config}:/config/pixiv
-      - ${PIXIV_STATE_DIR:-/volume2/docker/pixiv-auto-download/state}:/state/pixiv
-      - ${PIXIV_DOWNLOAD_DIR:-/volume2/se-p/pixiv}:/downloads/pixiv
-    environment:
-      TZ: Asia/Shanghai
-      PYTHONUNBUFFERED: "1"
-      PORT: "14001"
-      BROWSER_LOCK_PATH: /tmp/nas-auto-browser.lock
-      BROWSER_LOCK_WAIT_SECONDS: "7200"
+      - /volume2/docker/xhs-downloader/volumes:/app/Volume
+      - /volume2/se-p/小红书:/xhs
+    tty: true
+    stdin_open: true
+    command: python main.py api
+    restart: unless-stopped
+
+  nas-auto-download:
+    image: ghcr.io/ccawmiku/nas-auto-download-integrated:v1.1.4
+    container_name: nas-auto-download
+    depends_on:
+      - xhs-api
+    ports:
+      - "14001:14001"
+    volumes:
+      - /volume2/docker/xhs-downloader/volumes:/xhs-volume
+      - /volume2/docker/xhs-downloader/auto/config:/config/xhs
+      - /volume2/docker/xhs-downloader/auto/queue:/queue/xhs
+      - /volume2/docker/xhs-downloader/auto/state:/state/xhs
+      - /volume2/docker/x-auto-download/config:/config/x
+      - /volume2/docker/x-auto-download/state:/state/x
+      - /volume2/docker/x-auto-download/downloads-metadata:/downloads/x/downloads-metadata
+      - /volume2/se-p/x-p:/downloads/x/images
+      - /volume1/se-v/x-v:/downloads/x/videos
+      - /volume2/docker/pixiv-auto-download/config:/config/pixiv
+      - /volume2/docker/pixiv-auto-download/state:/state/pixiv
+      - /volume2/se-p/pixiv:/downloads/pixiv
     restart: unless-stopped

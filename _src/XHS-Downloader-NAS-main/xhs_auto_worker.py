@@ -55,6 +55,28 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "user_agent_env": "XHS_USER_AGENT",
         "cookie_secret_key": "xhs_cookie",
         "user_agent_secret_key": "xhs_user_agent",
+        "defaults": {
+            "mapping_data": {},
+            "work_path": "/xhs",
+            "folder_name": "Download",
+            "name_format": "发布时间 作者昵称 作品标题",
+            "proxy": None,
+            "timeout": 10,
+            "chunk": 2097152,
+            "max_retry": 5,
+            "record_data": True,
+            "image_format": "PNG",
+            "folder_mode": True,
+            "language": "zh_CN",
+            "image_download": True,
+            "video_download": True,
+            "live_download": True,
+            "download_record": True,
+            "author_archive": False,
+            "write_mtime": False,
+            "video_preference": "resolution",
+            "script_server": False,
+        },
     },
     "stop_marker": {
         "enabled": True,
@@ -413,9 +435,26 @@ def sync_downloader_settings(config: dict[str, Any]) -> None:
         return
 
     settings_path = Path(sync_config.get("path") or "")
-    if not settings_path.exists():
-        log(f"未找到 settings.json，跳过 Cookie 同步：{settings_path}")
-        return
+    settings: dict[str, Any] = {}
+    changed = False
+    if settings_path.exists():
+        try:
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            log(f"无法读取 settings.json，跳过 Cookie 同步：{error}")
+            return
+    else:
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        changed = True
+
+    defaults = sync_config.get("defaults", {})
+    if isinstance(defaults, dict):
+        for key, value in defaults.items():
+            if key == "mapping_data" and isinstance(settings.get(key), dict):
+                continue
+            if key not in settings or settings.get(key) != value:
+                settings[key] = value
+                changed = True
 
     cookie = runtime_value(
         config,
@@ -430,17 +469,9 @@ def sync_downloader_settings(config: dict[str, Any]) -> None:
         sync_config.get("user_agent_env", "XHS_USER_AGENT"),
         str(config.get("default_user_agent", "")),
     )
-    if not cookie and not user_agent:
+    if not cookie and not user_agent and not changed:
         log("Cookie 和 User Agent 均为空，跳过设置同步。")
         return
-
-    try:
-        settings = json.loads(settings_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        log(f"无法读取 settings.json，跳过 Cookie 同步：{error}")
-        return
-
-    changed = False
     if cookie and settings.get("cookie") != cookie:
         settings["cookie"] = cookie
         changed = True

@@ -1,6 +1,6 @@
 # NAS Auto Download Integrated
 
-单容器版 NAS 自动下载器，统一管理：
+NAS 自动下载整合 compose，统一管理：
 
 - 小红书点赞自动下载
 - X/Twitter Likes 自动下载
@@ -8,23 +8,23 @@
 
 ## 运行方式
 
-默认只暴露一个端口：
+统一网页默认使用 14001，小红书 API 保留原来的 13001：
 
 ```text
 http://NAS_IP:14001
+http://NAS_IP:13001
 ```
 
 启动：
 
 ```bash
-cp .env.example .env
 docker compose up -d
 ```
 
 默认镜像：
 
 ```text
-ghcr.io/ccawmiku/nas-auto-download-integrated:v1.1.3
+ghcr.io/ccawmiku/nas-auto-download-integrated:v1.1.4
 ```
 
 ## NAS 路径
@@ -49,7 +49,7 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.1.3
 /volume2/se-p/pixiv
 ```
 
-需要调整时改 `.env`。
+需要调整时直接改 `docker-compose.yml`。
 
 ## 统一网页
 
@@ -64,23 +64,22 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.1.3
 
 ## 浏览器性能保护
 
-小红书和 X 都会使用 Playwright 无头浏览器。单容器内置全局浏览器锁：
+小红书和 X 都会使用 Playwright 无头浏览器。整合 worker 容器内置全局浏览器锁：
 
 - 同一时间只允许一个无头浏览器采集任务运行
 - 另一个任务会等待，默认最长等待 7200 秒
-- 可通过 `BROWSER_LOCK_WAIT_SECONDS` 调整
-- X 的“连续已下载停止”按数据库 `done` 状态判断，迁移到单容器后不会因为旧文件路径变化而一直下翻
+- X 的“连续已下载停止”按数据库 `done` 状态判断，迁移后不会因为旧文件路径变化而一直下翻
 
 ## 停旧容器后迁移
 
-确认新镜像已拉取后，可以停掉旧的：
+确认新镜像已拉取后，可以停掉旧的 worker。旧 `xhs-api` 也需要停掉，让本 compose 用同样的配置重新管理：
 
 ```bash
 docker stop xhs-auto-worker x-auto-downloader pixiv-auto-downloader
 docker stop xhs-api
 ```
 
-然后启动单容器：
+然后启动整合 compose：
 
 ```bash
 docker compose up -d
