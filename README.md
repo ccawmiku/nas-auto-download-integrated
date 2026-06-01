@@ -24,7 +24,7 @@ docker compose up -d
 默认镜像：
 
 ```text
-ghcr.io/ccawmiku/nas-auto-download-integrated:v1.1.4
+ghcr.io/ccawmiku/nas-auto-download-integrated:v1.1.5
 ```
 
 ## NAS 路径
@@ -32,20 +32,20 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.1.4
 默认沿用原来的目录：
 
 ```text
-/volume2/docker/xhs-downloader/volumes
+/volume2/docker/nas-auto-download-integrated/xhs/volumes
 /volume2/se-p/小红书
-/volume2/docker/xhs-downloader/auto/config
-/volume2/docker/xhs-downloader/auto/queue
-/volume2/docker/xhs-downloader/auto/state
+/volume2/docker/nas-auto-download-integrated/xhs/auto/config
+/volume2/docker/nas-auto-download-integrated/xhs/auto/queue
+/volume2/docker/nas-auto-download-integrated/xhs/auto/state
 
-/volume2/docker/x-auto-download/config
-/volume2/docker/x-auto-download/state
-/volume2/docker/x-auto-download/downloads-metadata
+/volume2/docker/nas-auto-download-integrated/x/config
+/volume2/docker/nas-auto-download-integrated/x/state
+/volume2/docker/nas-auto-download-integrated/x/downloads-metadata
 /volume2/se-p/x-p
 /volume1/se-v/x-v
 
-/volume2/docker/pixiv-auto-download/config
-/volume2/docker/pixiv-auto-download/state
+/volume2/docker/nas-auto-download-integrated/pixiv/config
+/volume2/docker/nas-auto-download-integrated/pixiv/state
 /volume2/se-p/pixiv
 ```
 

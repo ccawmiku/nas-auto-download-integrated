@@ -7,7 +7,7 @@ services:
     ports:
       - "13001:5556"
     volumes:
-      - /volume2/docker/xhs-downloader/volumes:/app/Volume
+      - /volume2/docker/nas-auto-download-integrated/xhs/volumes:/app/Volume
       - /volume2/se-p/小红书:/xhs
     tty: true
     stdin_open: true
@@ -15,23 +15,23 @@ services:
     restart: unless-stopped
 
   nas-auto-download:
-    image: ghcr.io/ccawmiku/nas-auto-download-integrated:v1.1.4
+    image: ghcr.io/ccawmiku/nas-auto-download-integrated:v1.1.5
     container_name: nas-auto-download
     depends_on:
       - xhs-api
     ports:
       - "14001:14001"
     volumes:
-      - /volume2/docker/xhs-downloader/volumes:/xhs-volume
-      - /volume2/docker/xhs-downloader/auto/config:/config/xhs
-      - /volume2/docker/xhs-downloader/auto/queue:/queue/xhs
-      - /volume2/docker/xhs-downloader/auto/state:/state/xhs
-      - /volume2/docker/x-auto-download/config:/config/x
-      - /volume2/docker/x-auto-download/state:/state/x
-      - /volume2/docker/x-auto-download/downloads-metadata:/downloads/x/downloads-metadata
+      - /volume2/docker/nas-auto-download-integrated/xhs/volumes:/xhs-volume
+      - /volume2/docker/nas-auto-download-integrated/xhs/auto/config:/config/xhs
+      - /volume2/docker/nas-auto-download-integrated/xhs/auto/queue:/queue/xhs
+      - /volume2/docker/nas-auto-download-integrated/xhs/auto/state:/state/xhs
+      - /volume2/docker/nas-auto-download-integrated/x/config:/config/x
+      - /volume2/docker/nas-auto-download-integrated/x/state:/state/x
+      - /volume2/docker/nas-auto-download-integrated/x/downloads-metadata:/downloads/x/downloads-metadata
       - /volume2/se-p/x-p:/downloads/x/images
       - /volume1/se-v/x-v:/downloads/x/videos
-      - /volume2/docker/pixiv-auto-download/config:/config/pixiv
-      - /volume2/docker/pixiv-auto-download/state:/state/pixiv
+      - /volume2/docker/nas-auto-download-integrated/pixiv/config:/config/pixiv
+      - /volume2/docker/nas-auto-download-integrated/pixiv/state:/state/pixiv
       - /volume2/se-p/pixiv:/downloads/pixiv
     restart: unless-stopped
