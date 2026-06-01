@@ -407,12 +407,18 @@ class Store:
         row = self.get_tweet(tweet_id)
         return bool(row and row["status"] == "done")
 
-    def should_download(self, tweet_id: str, retry_failed: bool, max_attempts: int) -> bool:
+    def should_download(
+        self,
+        tweet_id: str,
+        retry_failed: bool,
+        max_attempts: int,
+        redownload_missing_files: bool,
+    ) -> bool:
         row = self.get_tweet(tweet_id)
         if not row:
             return True
         if row["status"] == "done":
-            if not self._row_has_existing_media(row):
+            if redownload_missing_files and not self._row_has_existing_media(row):
                 self.log.write(f"记录为 done 但本地媒体文件不存在，将重新下载：{tweet_id}")
                 return True
             return False
@@ -1270,7 +1276,13 @@ class Downloader:
         self.store.upsert_seen(item)
         retry_failed = bool(self.config.get("retry_failed", True))
         max_attempts = int(self.config.get("max_download_attempts", 0) or 0)
-        if not force and not self.store.should_download(tweet_id, retry_failed, max_attempts):
+        redownload_missing_files = bool(self.config.get("redownload_missing_files", False))
+        if not force and not self.store.should_download(
+            tweet_id,
+            retry_failed,
+            max_attempts,
+            redownload_missing_files,
+        ):
             return "skipped", [], ""
         media_hint = media_hint_from_item(item)
         try:

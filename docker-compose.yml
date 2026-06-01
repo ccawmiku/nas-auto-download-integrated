@@ -2,12 +2,12 @@ version: "3.9"
 
 services:
   nas-auto-download:
-    image: ${NAS_AUTO_IMAGE:-ghcr.io/ccawmiku/nas-auto-download-integrated:v1.1.2}
+    image: ${NAS_AUTO_IMAGE:-ghcr.io/ccawmiku/nas-auto-download-integrated:v1.1.3}
     container_name: nas-auto-download
     ports:
       - "${NAS_AUTO_PORT:-14001}:14001"
     volumes:
-      - ${XHS_VOLUME_DIR:-/volume2/docker/xhs-downloader/volumes}:/opt/xhs-api/Volume
+      - ${XHS_VOLUME_DIR:-/volume2/docker/xhs-downloader/volumes}:/app/Volume
       - ${XHS_VOLUME_DIR:-/volume2/docker/xhs-downloader/volumes}:/xhs-volume
       - ${XHS_DOWNLOAD_DIR:-/volume2/se-p/小红书}:/xhs
       - ${XHS_CONFIG_DIR:-/volume2/docker/xhs-downloader/auto/config}:/config/xhs

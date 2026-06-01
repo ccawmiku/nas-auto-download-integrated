@@ -7,6 +7,7 @@ import json
 import os
 import re
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -120,6 +121,7 @@ def ensure_configs() -> None:
             "database": "/state/x/x_auto.sqlite3",
             "cookie_file": "/config/x/x_cookies.txt",
             "download_dir": "/downloads/x",
+            "redownload_missing_files": False,
             "web": {"host": "127.0.0.1", "port": 18082},
         },
     )
@@ -177,9 +179,23 @@ def start_process(name: str, command: list[str], cwd: str, env_patch: dict[str, 
     log(f"已启动 {name}: pid={proc.pid}")
 
 
+def wait_for_port(name: str, host: str, port: int, timeout_seconds: int = 90) -> bool:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(2)
+            if sock.connect_ex((host, port)) == 0:
+                log(f"{name} ready on {host}:{port}")
+                return True
+        time.sleep(2)
+    log(f"{name} not ready after {timeout_seconds}s; workers will keep retrying through normal runs")
+    return False
+
+
 def start_children() -> None:
     ensure_configs()
-    start_process("xhs-api", [sys.executable, "main.py", "api"], "/opt/xhs-api")
+    start_process("xhs-api", [sys.executable, "main.py", "api"], "/app")
+    wait_for_port("xhs-api", "127.0.0.1", 5556)
     start_process(
         "xhs-worker",
         [sys.executable, "/opt/nas-auto/xhs/xhs_auto_worker.py", "--config", "/config/xhs/config.json"],

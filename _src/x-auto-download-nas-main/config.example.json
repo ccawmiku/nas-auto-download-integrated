@@ -11,6 +11,7 @@
   "jitter_seconds": 2,
   "retry_failed": true,
   "max_download_attempts": 0,
+  "redownload_missing_files": false,
   "known_stop_consecutive": 10,
   "stop_marker": {
     "enabled": true,
