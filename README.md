@@ -5,6 +5,7 @@ NAS 自动下载整合 compose，统一管理：
 - 小红书点赞自动下载
 - X/Twitter Likes 自动下载
 - Pixiv 收藏自动下载
+- 抖音点赞/收藏自动下载（f2）
 
 ## 运行方式
 
@@ -24,7 +25,7 @@ docker compose up -d
 默认镜像：
 
 ```text
-ghcr.io/ccawmiku/nas-auto-download-integrated:v1.1.6
+ghcr.io/ccawmiku/nas-auto-download-integrated:v1.2.0
 ```
 
 每次发布都会同步更新 `docker-compose.yml` 里的镜像版本。NAS 端更新时执行 `docker compose pull && docker compose up -d`，避免复用旧镜像 tag。
@@ -50,6 +51,10 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.1.6
 /volume2/docker/nas-auto-download-integrated/pixiv/config
 /volume2/docker/nas-auto-download-integrated/pixiv/state
 /volume2/se-p/pixiv
+
+/volume2/docker/nas-auto-download-integrated/douyin/config
+/volume2/docker/nas-auto-download-integrated/douyin/f2/database
+/volume2/qinlong-debian/F2DL
 ```
 
 需要调整时直接改 `docker-compose.yml`。
@@ -58,13 +63,32 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.1.6
 
 打开 `http://NAS_IP:14001` 后：
 
-- 首页可以进入小红书、X、Pixiv 三个原有管理页面
+- 首页可以进入小红书、X、Pixiv、抖音四个管理页面
 - 首页会显示各子服务是否就绪；子服务启动中时统一首页仍会先打开
 - 首页可以粘贴浏览器插件导出的一整份全站 Cookie header
 - 首页也可以上传 `cookies.txt`，只解析内容，不保存原始上传文件
-- 导入器会自动拆出小红书和 X 所需 Cookie
+- 导入器会自动拆出小红书、X 和抖音所需 Cookie
 - Pixiv 页面内可以生成登录链接、粘贴 callback/code、换取 refresh-token
+- 抖音页面会显示当前 f2 版本、PyPI 最新版本和检查时间，可手动触发版本检查
 - 子页面顶部会显示“返回统一主页”
+
+## 抖音 f2 迁移
+
+抖音集成使用 `f2==0.0.1.7`，默认跑点赞和收藏两个任务。f2 自己的数据库继续沿用：
+
+```text
+/volume2/docker/nas-auto-download-integrated/douyin/f2/database/douyin_users.db
+/volume2/docker/nas-auto-download-integrated/douyin/f2/database/douyin_videos.db
+```
+
+如果之前在青龙面板里已经跑过 f2，把原来的 `douyin_users.db` 放到上面的 `database` 目录即可延续点赞/收藏记录；有 `douyin_videos.db` 也可以一起放进去，没有也能运行，f2 需要时会自行创建。抖音 Cookie 从统一主页的一次性 Cookie 导入写入 `/config/douyin/douyin_cookie.txt`，不需要写进 YAML。导入器会保留 cookies.txt 里所有 `douyin.com` 域名下的 Cookie，生成给 f2 的任务 YAML 时保持单行 Cookie 字符串。
+
+下载目录挂载为 `/volume2/qinlong-debian/F2DL:/F2DL`。f2 会按配置里的 `mode` 自动保存到：
+
+```text
+/volume2/qinlong-debian/F2DL/douyin/like/昵称/作品文件夹
+/volume2/qinlong-debian/F2DL/douyin/collection/昵称/作品文件夹
+```
 
 ## 浏览器性能保护
 

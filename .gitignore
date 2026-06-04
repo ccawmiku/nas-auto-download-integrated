@@ -3,5 +3,7 @@ secrets/
 xhs/
 x/
 pixiv/
+logs/
+抖音f2相关参考/
 **/__pycache__/
 *.py[cod]

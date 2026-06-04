@@ -22,12 +22,13 @@ from urllib.parse import parse_qs, urlsplit
 PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
 BROWSER_LOCK_PATH = os.environ.get("BROWSER_LOCK_PATH", "/tmp/nas-auto-browser.lock")
-APP_VERSION = os.environ.get("APP_VERSION", "v1.1.6")
+APP_VERSION = os.environ.get("APP_VERSION", "v1.2.0")
 
 SERVICES = {
     "xhs": {"name": "小红书", "port": 18081, "path": "/xhs/", "config": "/config/xhs/config.json"},
     "x": {"name": "X", "port": 18082, "path": "/x/", "config": "/config/x/config.json"},
     "pixiv": {"name": "Pixiv", "port": 18083, "path": "/pixiv/", "config": "/config/pixiv/config.json"},
+    "douyin": {"name": "抖音", "port": 18084, "path": "/douyin/", "config": "/config/douyin/config.json"},
 }
 
 SITE_RULES = {
@@ -49,6 +50,63 @@ SITE_RULES = {
             "lang",
             "d_prefs",
             "night_mode",
+        },
+    },
+    "douyin": {
+        "output": Path("/config/douyin/douyin_cookie.txt"),
+        "domains": {"douyin.com", ".douyin.com", "www.douyin.com", ".www.douyin.com"},
+        "all_names": True,
+        "names": {
+            "__ac_nonce",
+            "__ac_signature",
+            "__security_mc_1_s_sdk_cert_key",
+            "__security_mc_1_s_sdk_crypt_sdk",
+            "__security_mc_1_s_sdk_sign_data_key_web_protect",
+            "__security_server_data_status",
+            "_bd_ticket_crypt_cookie",
+            "_bd_ticket_crypt_doamin",
+            "bd_ticket_guard_client_data",
+            "bd_ticket_guard_client_data_v2",
+            "bd_ticket_guard_client_web_domain",
+            "bd_ticket_guard_web_domain",
+            "bit_env",
+            "csrf_session_id",
+            "d_ticket",
+            "download_guide",
+            "dy_sheight",
+            "dy_swidth",
+            "fpk1",
+            "fpk2",
+            "gulu_source_res",
+            "is_staff_user",
+            "login_time",
+            "msToken",
+            "n_mh",
+            "odin_tt",
+            "passport_assist_user",
+            "passport_auth_mix_state",
+            "passport_csrf_token",
+            "passport_csrf_token_default",
+            "passport_mfa_token",
+            "record_force_login",
+            "s_v_web_id",
+            "sdk_source_info",
+            "session_tlb_tag",
+            "sessionid",
+            "sessionid_ss",
+            "sid_guard",
+            "sid_tt",
+            "sid_ucp_v1",
+            "ssid_ucp_v1",
+            "stream_player_status_params",
+            "strategyABtestKey",
+            "ttwid",
+            "uid_tt",
+            "uid_tt_ss",
+            "UIFID",
+            "UIFID_TEMP",
+            "volume_info",
+            "xgplayer_user_id",
         },
     },
 }
@@ -140,15 +198,28 @@ def ensure_configs() -> None:
             "web": {"host": "127.0.0.1", "port": 18083},
         },
     )
+    ensure_config(
+        Path("/config/douyin/config.json"),
+        ROOT / "douyin" / "config.example.json",
+        {
+            "cookie_file": "/config/douyin/douyin_cookie.txt",
+            "f2_state_dir": "/state/douyin/f2",
+            "f2_config_dir": "/config/douyin/f2",
+            "download_dir": "/F2DL",
+            "web": {"host": "127.0.0.1", "port": 18084},
+        },
+    )
     for path in [
         Path("/queue/xhs"),
         Path("/state/xhs"),
         Path("/state/x"),
         Path("/state/pixiv"),
+        Path("/state/douyin/f2"),
         Path("/downloads/x/images"),
         Path("/downloads/x/videos"),
         Path("/downloads/x/downloads-metadata"),
         Path("/downloads/pixiv"),
+        Path("/F2DL"),
     ]:
         path.mkdir(parents=True, exist_ok=True)
 
@@ -220,6 +291,11 @@ def start_children() -> None:
         "/opt/nas-auto/pixiv",
         {"PIXIV_REFRESH_TOKEN_FILE": "/config/pixiv/pixiv_refresh_token.txt"},
     )
+    start_process(
+        "douyin-worker",
+        [sys.executable, "/opt/nas-auto/douyin/douyin_f2_worker.py", "--config", "/config/douyin/config.json"],
+        "/opt/nas-auto/douyin",
+    )
 
 
 def parse_cookie_header(text: str) -> dict[str, str]:
@@ -239,11 +315,46 @@ def parse_cookie_header(text: str) -> dict[str, str]:
     return values
 
 
+def parse_netscape_cookies(text: str) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) < 7:
+            continue
+        domain, _flag, path, secure, expires, name, value = parts[:7]
+        if name:
+            rows.append(
+                {
+                    "domain": domain.strip(),
+                    "path": path.strip() or "/",
+                    "secure": secure.strip().upper(),
+                    "expires": expires.strip() or "0",
+                    "name": name.strip(),
+                    "value": value.strip(),
+                }
+            )
+    return rows
+
+
 def import_all_cookie(text: str) -> dict[str, Any]:
     values = parse_cookie_header(text)
+    rows = parse_netscape_cookies(text)
     result: dict[str, Any] = {}
     for key, rule in SITE_RULES.items():
-        selected = {name: values[name] for name in sorted(rule["names"]) if name in values}
+        if rule.get("all_names"):
+            selected = dict(values)
+        else:
+            selected = {name: values[name] for name in sorted(rule["names"]) if name in values}
+        domains = set(rule.get("domains") or [])
+        if domains and rows:
+            selected = {}
+            for row in rows:
+                domain = row["domain"].removeprefix("#HttpOnly_")
+                if domain in domains and (rule.get("all_names") or row["name"] in rule["names"]):
+                    selected[row["name"]] = row["value"]
         if selected:
             output: Path = rule["output"]
             output.parent.mkdir(parents=True, exist_ok=True)
@@ -253,6 +364,8 @@ def import_all_cookie(text: str) -> dict[str, Any]:
                 for name, value in selected.items():
                     lines.append(f".x.com\tTRUE\t/\tTRUE\t{expires}\t{name}\t{value}")
                 output.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            elif key == "douyin":
+                output.write_text("; ".join(f"{name}={value}" for name, value in selected.items()) + "\n", encoding="utf-8")
             else:
                 output.write_text("; ".join(f"{name}={value}" for name, value in selected.items()) + "\n", encoding="utf-8")
         result[key] = {"count": len(selected), "output": str(rule["output"]), "names": sorted(selected)}
@@ -329,15 +442,15 @@ textarea,input[type=file]{{width:100%;box-sizing:border-box;border:1px solid #d8
 pre{{background:#0f172a;color:#dbeafe;padding:12px;border-radius:6px;overflow:auto;max-height:360px;white-space:pre-wrap}}
 .ok{{background:#ecfdf5;border-color:#bbf7d0}}
 </style></head><body>
-<header><h1>NAS Auto Download</h1><div>统一入口：小红书 / X / Pixiv · {html.escape(APP_VERSION)}</div></header>
+<header><h1>NAS Auto Download</h1><div>统一入口：小红书 / X / Pixiv / 抖音 · {html.escape(APP_VERSION)}</div></header>
 <main>
 {f'<section class="ok">{html.escape(message)}</section>' if message else ''}
 <section><h2>服务入口</h2><div class="grid">{cards}</div><p class="muted">无头浏览器锁：{lock}</p></section>
-<section><h2>一次性导入 Cookie</h2><p class="muted">粘贴或上传浏览器插件导出的全站 Cookie。服务器只读取内容并拆出小红书/X 所需字段，不保存原始上传文件。Pixiv 请进入 Pixiv 页面生成登录链接并换取 Token。</p>
+<section><h2>一次性导入 Cookie</h2><p class="muted">粘贴或上传浏览器插件导出的全站 Cookie。服务器只读取内容并拆出小红书/X/抖音所需字段，不保存原始上传文件。Pixiv 请进入 Pixiv 页面生成登录链接并换取 Token。</p>
 <form method="post" action="/import-cookies" enctype="multipart/form-data">
 <label class="muted">上传 cookies.txt</label><input type="file" name="cookie_file" accept=".txt,.cookies,text/plain">
 <label class="muted">或直接粘贴 Cookie 内容</label><textarea name="cookie_text" placeholder="name=value; name2=value2; ..."></textarea>
-<p><button type="submit">导入小红书和 X Cookie</button></p></form></section>
+<p><button type="submit">导入小红书、X 和抖音 Cookie</button></p></form></section>
 <section><h2>最近日志</h2><pre>{html.escape(chr(10).join(log_lines[-80:]))}</pre></section>
 </main></body></html>"""
     return body.encode("utf-8")

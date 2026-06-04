@@ -84,6 +84,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "api_retry_backoff_seconds": 3.0,
         "download_retries": 4,
         "download_retry_backoff_seconds": 2.0,
+        "rate_limit_min_sleep_seconds": 60,
+        "rate_limit_max_sleep_seconds": 900,
         "retry_statuses": [429, 500, 502, 503, 504],
         "retry_after_failure_minutes": 15,
         "diagnostics": [
@@ -307,6 +309,45 @@ def retry_statuses(config: dict[str, Any]) -> list[int]:
     return statuses or [429, 500, 502, 503, 504]
 
 
+def retry_after_from_response(response: Any) -> float:
+    if response is None:
+        return 0.0
+    value = ""
+    try:
+        value = str(response.headers.get("Retry-After") or "").strip()
+    except Exception:
+        value = ""
+    if not value:
+        return 0.0
+    if value.isdigit():
+        return max(0.0, float(value))
+    try:
+        from email.utils import parsedate_to_datetime
+
+        retry_at = parsedate_to_datetime(value)
+        return max(0.0, retry_at.timestamp() - time.time())
+    except Exception:
+        return 0.0
+
+
+def is_rate_limit_error(error: BaseException) -> bool:
+    response = getattr(error, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if status_code == 429:
+        return True
+    return "429" in str(error).lower()
+
+
+def rate_limit_sleep_seconds(error: BaseException, config: dict[str, Any], attempt: int, base_backoff: float) -> float:
+    net = network_config(config)
+    minimum = float_config(net, "rate_limit_min_sleep_seconds", 60.0, minimum=1.0)
+    maximum = float_config(net, "rate_limit_max_sleep_seconds", 900.0, minimum=minimum)
+    retry_after = retry_after_from_response(getattr(error, "response", None))
+    exponential = base_backoff * (2 ** (attempt - 1))
+    sleep_seconds = max(minimum, retry_after, exponential) + random.uniform(0, 5.0)
+    return min(maximum, sleep_seconds)
+
+
 def configure_retry_adapter(session: requests.Session, total: int, backoff: float, statuses: list[int]) -> None:
     retry = Retry(
         total=total,
@@ -345,6 +386,8 @@ def classify_error(error: BaseException) -> str:
     lower = text.lower()
     if any(marker in lower for marker in TOKEN_ERROR_MARKERS):
         return "token"
+    if is_rate_limit_error(error):
+        return "rate_limit"
     if isinstance(error, requests.exceptions.RequestException):
         return "network"
     if isinstance(error, PixivError) and "requests " in lower and "error" in lower:
@@ -355,7 +398,7 @@ def classify_error(error: BaseException) -> str:
 
 
 def is_transient_network_error(error: BaseException) -> bool:
-    return classify_error(error) == "network"
+    return classify_error(error) in {"network", "rate_limit"}
 
 
 def call_with_retry(
@@ -375,9 +418,14 @@ def call_with_retry(
             last_error = error
             if attempt >= attempts or not is_transient_network_error(error):
                 raise
-            sleep_seconds = backoff * (2 ** (attempt - 1)) + random.uniform(0, 1.5)
+            if is_rate_limit_error(error):
+                sleep_seconds = rate_limit_sleep_seconds(error, config, attempt, backoff)
+                reason = "429 限流"
+            else:
+                sleep_seconds = backoff * (2 ** (attempt - 1)) + random.uniform(0, 1.5)
+                reason = "网络异常"
             if log:
-                log.write(f"{label} 网络异常，{sleep_seconds:.1f}s 后重试 {attempt + 1}/{attempts}: {error}")
+                log.write(f"{label} {reason}，{sleep_seconds:.1f}s 后重试 {attempt + 1}/{attempts}: {error}")
             time.sleep(sleep_seconds)
     if last_error:
         raise last_error
@@ -879,8 +927,13 @@ class PixivDownloader:
                     tmp.unlink(missing_ok=True)
                 if attempt >= attempts or not is_transient_network_error(error):
                     raise
-                sleep_seconds = backoff * (2 ** (attempt - 1)) + random.uniform(0, 1.5)
-                self.log.write(f"下载网络异常，{sleep_seconds:.1f}s 后重试 {attempt + 1}/{attempts}: {target.name} {error}")
+                if is_rate_limit_error(error):
+                    sleep_seconds = rate_limit_sleep_seconds(error, self.config, attempt, backoff)
+                    reason = "429 限流"
+                else:
+                    sleep_seconds = backoff * (2 ** (attempt - 1)) + random.uniform(0, 1.5)
+                    reason = "网络异常"
+                self.log.write(f"下载{reason}，{sleep_seconds:.1f}s 后重试 {attempt + 1}/{attempts}: {target.name} {error}")
                 time.sleep(sleep_seconds)
         tmp.replace(target)
         if target.stat().st_size <= 0:
@@ -1176,10 +1229,10 @@ class App:
             self.store.finish_run(run_id, "failed", stats, message)
             self.log.write(f"Run failed: {message}")
             self.log.write(traceback.format_exc())
-            if self.last_run_error_type == "network":
+            if self.last_run_error_type in {"network", "rate_limit"}:
                 retry_at = time.time() + self.retry_after_failure_seconds()
                 self.next_run_at = min(self.next_run_at, retry_at) if self.next_run_at else retry_at
-                self.log.write(f"检测到临时网络错误，将提前在 {datetime.fromtimestamp(self.next_run_at).isoformat()} 重试")
+                self.log.write(f"检测到临时网络/限流错误，将提前在 {datetime.fromtimestamp(self.next_run_at).isoformat()} 重试")
             raise
         finally:
             self.last_run_message = message

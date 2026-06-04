@@ -31,6 +31,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Read app version
+        id: version
+        shell: bash
+        run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -39,6 +44,7 @@ jobs:
           tags: |
             type=ref,event=tag
             type=ref,event=branch
+            type=raw,value=${{ steps.version.outputs.version }}
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push
@@ -47,7 +53,7 @@ jobs:
           context: .
           file: _integrated/Dockerfile
           build-args: |
-            APP_VERSION=${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+            APP_VERSION=${{ steps.version.outputs.version }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
