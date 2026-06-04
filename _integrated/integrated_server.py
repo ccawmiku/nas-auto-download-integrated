@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, urlsplit
 PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
 BROWSER_LOCK_PATH = os.environ.get("BROWSER_LOCK_PATH", "/tmp/nas-auto-browser.lock")
+APP_VERSION = os.environ.get("APP_VERSION", "v1.1.6")
 
 SERVICES = {
     "xhs": {"name": "小红书", "port": 18081, "path": "/xhs/", "config": "/config/xhs/config.json"},
@@ -53,7 +54,7 @@ SITE_RULES = {
 }
 
 
-processes: list[subprocess.Popen] = []
+processes: list[tuple[str, subprocess.Popen]] = []
 log_lines: list[str] = []
 log_lock = threading.Lock()
 
@@ -174,7 +175,7 @@ def start_process(name: str, command: list[str], cwd: str, env_patch: dict[str, 
         encoding="utf-8",
         errors="replace",
     )
-    processes.append(proc)
+    processes.append((name, proc))
     threading.Thread(target=stream_output, args=(name, proc), daemon=True).start()
     log(f"已启动 {name}: pid={proc.pid}")
 
@@ -190,6 +191,12 @@ def wait_for_port(name: str, host: str, port: int, timeout_seconds: int = 90) ->
         time.sleep(2)
     log(f"{name} not ready after {timeout_seconds}s; workers will keep retrying through normal runs")
     return False
+
+
+def is_port_open(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.5)
+        return sock.connect_ex((host, port)) == 0
 
 
 def start_children() -> None:
@@ -281,18 +288,34 @@ def read_import_cookie_payload(handler: BaseHTTPRequestHandler, length: int) -> 
 def service_status() -> dict[str, Any]:
     return {
         "processes": [
-            {"pid": proc.pid, "returncode": proc.poll()} for proc in processes
+            {"name": name, "pid": proc.pid, "returncode": proc.poll()} for name, proc in processes
+        ],
+        "services": [
+            {
+                "key": key,
+                "name": svc["name"],
+                "path": svc["path"],
+                "port": svc["port"],
+                "ready": is_port_open("127.0.0.1", int(svc["port"])),
+            }
+            for key, svc in SERVICES.items()
         ],
         "browser_lock": Path(BROWSER_LOCK_PATH).exists(),
         "logs": list(log_lines[-80:]),
+        "version": APP_VERSION,
     }
 
 
 def page(message: str = "") -> bytes:
-    cards = "".join(
-        f'<a class="card" href="{svc["path"]}"><strong>{html.escape(svc["name"])}</strong><span>{html.escape(svc["path"])}</span></a>'
-        for svc in SERVICES.values()
-    )
+    cards = ""
+    for svc in SERVICES.values():
+        ready = is_port_open("127.0.0.1", int(svc["port"]))
+        cls = "ready" if ready else "starting"
+        label = "已就绪" if ready else "启动中"
+        cards += (
+            f'<a class="card {cls}" href="{svc["path"]}"><strong>{html.escape(svc["name"])}</strong>'
+            f'<span>{html.escape(svc["path"])}</span><em>{label}</em></a>'
+        )
     lock = "占用中，其他浏览器任务会等待" if Path(BROWSER_LOCK_PATH).exists() else "空闲"
     body = f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -301,12 +324,12 @@ def page(message: str = "") -> bytes:
 body{{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#f5f7fb;color:#182033}}
 header{{background:#111827;color:#fff;padding:18px 24px}} main{{max-width:1100px;margin:0 auto;padding:20px;display:grid;gap:16px}}
 .grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}} .card,section{{background:#fff;border:1px solid #d8dee9;border-radius:8px;padding:16px}}
-.card{{display:grid;gap:6px;text-decoration:none;color:inherit}} .card strong{{font-size:18px}} .card span,.muted{{color:#64748b}}
+.card{{display:grid;gap:6px;text-decoration:none;color:inherit}} .card strong{{font-size:18px}} .card span,.muted{{color:#64748b}} .card em{{font-style:normal;color:#64748b}} .card.ready em{{color:#047857}} .card.starting em{{color:#b45309}}
 textarea,input[type=file]{{width:100%;box-sizing:border-box;border:1px solid #d8dee9;border-radius:6px;padding:10px;font:inherit;background:white}} textarea{{min-height:140px}} button{{border:0;border-radius:6px;background:#111827;color:white;padding:9px 14px;cursor:pointer}}
 pre{{background:#0f172a;color:#dbeafe;padding:12px;border-radius:6px;overflow:auto;max-height:360px;white-space:pre-wrap}}
 .ok{{background:#ecfdf5;border-color:#bbf7d0}}
 </style></head><body>
-<header><h1>NAS Auto Download</h1><div>统一入口：小红书 / X / Pixiv</div></header>
+<header><h1>NAS Auto Download</h1><div>统一入口：小红书 / X / Pixiv · {html.escape(APP_VERSION)}</div></header>
 <main>
 {f'<section class="ok">{html.escape(message)}</section>' if message else ''}
 <section><h2>服务入口</h2><div class="grid">{cards}</div><p class="muted">无头浏览器锁：{lock}</p></section>
@@ -372,6 +395,13 @@ def proxy(handler: BaseHTTPRequestHandler, service_key: str, prefix: str) -> Non
         handler.send_header("Content-Length", str(len(data)))
         handler.end_headers()
         handler.wfile.write(data)
+    except (OSError, TimeoutError, http.client.HTTPException) as error:
+        data = page(f"{svc['name']} 服务暂不可用，请稍后刷新。{error}")
+        handler.send_response(HTTPStatus.BAD_GATEWAY)
+        handler.send_header("Content-Type", "text/html; charset=utf-8")
+        handler.send_header("Content-Length", str(len(data)))
+        handler.end_headers()
+        handler.wfile.write(data)
     finally:
         conn.close()
 
@@ -429,11 +459,11 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def shutdown(_signum: int, _frame: Any) -> None:
-    for proc in processes:
+    for _name, proc in processes:
         if proc.poll() is None:
             proc.terminate()
     time.sleep(2)
-    for proc in processes:
+    for _name, proc in processes:
         if proc.poll() is None:
             proc.kill()
     raise SystemExit(0)
@@ -442,7 +472,8 @@ def shutdown(_signum: int, _frame: Any) -> None:
 def main() -> int:
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
-    start_children()
+    ensure_configs()
+    threading.Thread(target=start_children, daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     log(f"统一 Web UI listening on 0.0.0.0:{PORT}")
     server.serve_forever()

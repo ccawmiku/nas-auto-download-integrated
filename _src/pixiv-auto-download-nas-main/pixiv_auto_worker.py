@@ -14,6 +14,7 @@ import threading
 import time
 import traceback
 import zipfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -23,7 +24,10 @@ from typing import Any
 from urllib.parse import parse_qs
 
 import requests
+from requests.adapters import HTTPAdapter
 from pixivpy3 import AppPixivAPI
+from pixivpy3.utils import PixivError
+from urllib3.util.retry import Retry
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from pixiv_gallerydl_oauth import finish_flow as finish_pixiv_oauth
@@ -73,6 +77,20 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "host": "0.0.0.0",
         "port": 8080,
         "log_lines": 400,
+    },
+    "network": {
+        "api_timeout_seconds": 60,
+        "api_retries": 4,
+        "api_retry_backoff_seconds": 3.0,
+        "download_retries": 4,
+        "download_retry_backoff_seconds": 2.0,
+        "retry_statuses": [429, 500, 502, 503, 504],
+        "retry_after_failure_minutes": 15,
+        "diagnostics": [
+            {"name": "Pixiv OAuth", "url": "https://oauth.secure.pixiv.net/auth/token", "method": "HEAD"},
+            {"name": "Pixiv API", "url": "https://app-api.pixiv.net/", "method": "HEAD"},
+            {"name": "Pixiv Image CDN", "url": "https://i.pximg.net/", "method": "HEAD"},
+        ],
     },
 }
 
@@ -224,6 +242,148 @@ def write_refresh_token(path: Path, token: str) -> None:
     path.write_text(value + "\n", encoding="utf-8")
 
 
+TRANSIENT_NETWORK_MARKERS = (
+    "SSLEOFError",
+    "UNEXPECTED_EOF",
+    "Max retries exceeded",
+    "Connection aborted",
+    "Connection reset",
+    "Connection refused",
+    "RemoteDisconnected",
+    "Read timed out",
+    "ConnectTimeout",
+    "ConnectionError",
+    "Temporary failure",
+    "Name or service not known",
+    "nodename nor servname provided",
+    "TLSV1_ALERT",
+    "EOF occurred in violation of protocol",
+    "429",
+    "500",
+    "502",
+    "503",
+    "504",
+)
+
+TOKEN_ERROR_MARKERS = (
+    "invalid_grant",
+    "invalid refresh token",
+    "invalid_token",
+    "unauthorized",
+    "refresh token is empty",
+    "refresh token file not found",
+)
+
+
+def network_config(config: dict[str, Any]) -> dict[str, Any]:
+    value = config.get("network")
+    return value if isinstance(value, dict) else {}
+
+
+def int_config(config: dict[str, Any], key: str, default: int, minimum: int = 0) -> int:
+    try:
+        return max(minimum, int(config.get(key, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def float_config(config: dict[str, Any], key: str, default: float, minimum: float = 0.0) -> float:
+    try:
+        return max(minimum, float(config.get(key, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def retry_statuses(config: dict[str, Any]) -> list[int]:
+    raw = network_config(config).get("retry_statuses", [429, 500, 502, 503, 504])
+    if not isinstance(raw, list):
+        return [429, 500, 502, 503, 504]
+    statuses: list[int] = []
+    for value in raw:
+        try:
+            statuses.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return statuses or [429, 500, 502, 503, 504]
+
+
+def configure_retry_adapter(session: requests.Session, total: int, backoff: float, statuses: list[int]) -> None:
+    retry = Retry(
+        total=total,
+        connect=total,
+        read=total,
+        status=total,
+        backoff_factor=backoff,
+        status_forcelist=statuses,
+        allowed_methods=frozenset({"HEAD", "GET", "POST", "PUT", "DELETE", "OPTIONS"}),
+        respect_retry_after_header=True,
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+
+
+def configure_api_session(api: AppPixivAPI, config: dict[str, Any]) -> None:
+    net = network_config(config)
+    total = int_config(net, "api_retries", 4)
+    backoff = float_config(net, "api_retry_backoff_seconds", 3.0)
+    configure_retry_adapter(api.requests, total, backoff, retry_statuses(config))
+
+
+def make_download_session(config: dict[str, Any]) -> requests.Session:
+    net = network_config(config)
+    session = requests.Session()
+    total = int_config(net, "download_retries", 4)
+    backoff = float_config(net, "download_retry_backoff_seconds", 2.0)
+    configure_retry_adapter(session, total, backoff, retry_statuses(config))
+    return session
+
+
+def classify_error(error: BaseException) -> str:
+    text = str(error)
+    lower = text.lower()
+    if any(marker in lower for marker in TOKEN_ERROR_MARKERS):
+        return "token"
+    if isinstance(error, requests.exceptions.RequestException):
+        return "network"
+    if isinstance(error, PixivError) and "requests " in lower and "error" in lower:
+        return "network"
+    if any(marker.lower() in lower for marker in TRANSIENT_NETWORK_MARKERS):
+        return "network"
+    return "application"
+
+
+def is_transient_network_error(error: BaseException) -> bool:
+    return classify_error(error) == "network"
+
+
+def call_with_retry(
+    label: str,
+    func: Any,
+    config: dict[str, Any],
+    log: RingLog | None = None,
+) -> Any:
+    net = network_config(config)
+    attempts = max(1, int_config(net, "api_retries", 4, minimum=1))
+    backoff = float_config(net, "api_retry_backoff_seconds", 3.0)
+    last_error: BaseException | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return func()
+        except Exception as error:
+            last_error = error
+            if attempt >= attempts or not is_transient_network_error(error):
+                raise
+            sleep_seconds = backoff * (2 ** (attempt - 1)) + random.uniform(0, 1.5)
+            if log:
+                log.write(f"{label} 网络异常，{sleep_seconds:.1f}s 后重试 {attempt + 1}/{attempts}: {error}")
+            time.sleep(sleep_seconds)
+    if last_error:
+        raise last_error
+    raise RuntimeError(f"{label} failed without an exception")
+
+
 def normalize_illust(illust: Any, restrict: str) -> Artwork:
     raw = illust if isinstance(illust, dict) else illust.to_dict()
     tags = []
@@ -280,9 +440,21 @@ def original_image_entries(item: Artwork) -> list[tuple[int, str]]:
     return entries
 
 
-def auth_api(refresh_token: str) -> AppPixivAPI:
-    api = AppPixivAPI()
-    api.auth(refresh_token=refresh_token)
+def safe_extract_zip(archive: zipfile.ZipFile, target_dir: Path) -> None:
+    root = target_dir.resolve()
+    for member in archive.infolist():
+        member_path = (target_dir / member.filename).resolve()
+        if root != member_path and root not in member_path.parents:
+            raise RuntimeError(f"unsafe zip member path: {member.filename}")
+    archive.extractall(target_dir)
+
+
+def auth_api(refresh_token: str, config: dict[str, Any] | None = None, log: RingLog | None = None) -> AppPixivAPI:
+    config = config or DEFAULT_CONFIG
+    timeout = float_config(network_config(config), "api_timeout_seconds", 60.0, minimum=1.0)
+    api = AppPixivAPI(timeout=timeout)
+    configure_api_session(api, config)
+    call_with_retry("Pixiv OAuth", lambda: api.auth(refresh_token=refresh_token), config, log)
     return api
 
 
@@ -314,8 +486,20 @@ class Store:
         conn.row_factory = sqlite3.Row
         return conn
 
+    @contextmanager
+    def connection(self) -> Any:
+        conn = self.connect()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def _init(self) -> None:
-        with self.connect() as conn:
+        with self.connection() as conn:
             conn.executescript(
                 """
                 create table if not exists artworks (
@@ -335,6 +519,7 @@ class Store:
                     status text not null default 'pending',
                     attempts integer not null default 0,
                     files_json text not null default '[]',
+                    error_type text,
                     error text,
                     first_seen_at text not null,
                     downloaded_at text,
@@ -362,6 +547,7 @@ class Store:
                     "status": "text not null default 'pending'",
                     "attempts": "integer not null default 0",
                     "files_json": "text not null default '[]'",
+                    "error_type": "text",
                     "error": "text",
                     "downloaded_at": "text",
                 },
@@ -385,12 +571,12 @@ class Store:
                 conn.execute(f"alter table {table} add column {name} {definition}")
 
     def begin_run(self) -> int:
-        with self._lock, self.connect() as conn:
+        with self._lock, self.connection() as conn:
             cur = conn.execute("insert into runs(started_at, status) values(?, 'running')", (now_iso(),))
             return int(cur.lastrowid)
 
     def finish_run(self, run_id: int, status: str, stats: dict[str, int], message: str = "") -> None:
-        with self._lock, self.connect() as conn:
+        with self._lock, self.connection() as conn:
             conn.execute(
                 """
                 update runs
@@ -410,7 +596,7 @@ class Store:
             )
 
     def upsert_seen(self, item: Artwork) -> None:
-        with self._lock, self.connect() as conn:
+        with self._lock, self.connection() as conn:
             conn.execute(
                 """
                 insert into artworks(
@@ -454,7 +640,7 @@ class Store:
             )
 
     def get_artwork(self, artwork_id: str) -> sqlite3.Row | None:
-        with self.connect() as conn:
+        with self.connection() as conn:
             return conn.execute("select * from artworks where artwork_id=?", (artwork_id,)).fetchone()
 
     def _row_has_files(self, row: sqlite3.Row) -> bool:
@@ -488,19 +674,22 @@ class Store:
                 return False
         return True
 
-    def mark_result(self, artwork_id: str, status: str, files: list[str], error: str = "") -> None:
-        with self._lock, self.connect() as conn:
+    def mark_result(self, artwork_id: str, status: str, files: list[str], error: str = "", error_type: str = "") -> None:
+        attempt_delta = 0 if status == "failed" and error_type == "network" else 1
+        with self._lock, self.connection() as conn:
             conn.execute(
                 """
                 update artworks
-                set status=?, attempts=attempts+1, files_json=?, error=?,
+                set status=?, attempts=attempts+?, files_json=?, error_type=?, error=?,
                     downloaded_at=case when ?='done' then ? else downloaded_at end,
                     updated_at=?
                 where artwork_id=?
                 """,
                 (
                     status,
+                    attempt_delta,
                     json.dumps(files, ensure_ascii=False),
+                    error_type,
                     error[-2000:],
                     status,
                     now_iso(),
@@ -510,7 +699,7 @@ class Store:
             )
 
     def recent_artworks(self, limit: int = 100) -> list[dict[str, Any]]:
-        with self.connect() as conn:
+        with self.connection() as conn:
             rows = conn.execute("select * from artworks order by updated_at desc limit ?", (limit,)).fetchall()
             result = []
             for row in rows:
@@ -525,7 +714,7 @@ class Store:
             return result
 
     def recent_runs(self, limit: int = 20) -> list[dict[str, Any]]:
-        with self.connect() as conn:
+        with self.connection() as conn:
             return [dict(row) for row in conn.execute("select * from runs order by id desc limit ?", (limit,))]
 
 
@@ -538,7 +727,12 @@ class PixivCollector:
         self.progress = progress
 
     def fetch_detail(self, artwork_id: str, restrict: str = "manual") -> Artwork:
-        result = self.api.illust_detail(artwork_id)
+        result = call_with_retry(
+            f"作品详情 {artwork_id}",
+            lambda: self.api.illust_detail(artwork_id),
+            self.config,
+            self.log,
+        )
         illust = result.get("illust")
         if not illust:
             raise RuntimeError(f"artwork detail not found: {artwork_id}")
@@ -566,8 +760,13 @@ class PixivCollector:
                 if max_pages > 0 and page > max_pages:
                     self.log.write(f"[{restrict}] reached max_pages={max_pages}")
                     break
-                result = self.api.user_bookmarks_illust(**next_qs) if next_qs else self.api.user_bookmarks_illust(
-                    user_id=user_id, restrict=restrict
+                result = call_with_retry(
+                    f"{restrict} 收藏 page={page}",
+                    lambda: self.api.user_bookmarks_illust(**next_qs)
+                    if next_qs
+                    else self.api.user_bookmarks_illust(user_id=user_id, restrict=restrict),
+                    self.config,
+                    self.log,
                 )
                 illusts = list(result.get("illusts") or [])
                 if not illusts:
@@ -621,7 +820,7 @@ class PixivDownloader:
         self.config = config
         self.store = store
         self.log = log
-        self.session = requests.Session()
+        self.session = make_download_session(config)
         self.session.headers.update(
             {
                 "User-Agent": "PixivAndroidApp/5.0.234 (Android 11; Pixel 5)",
@@ -646,7 +845,12 @@ class PixivDownloader:
         return path
 
     def fetch_detail(self, item: Artwork) -> Artwork:
-        result = self.api.illust_detail(item.artwork_id)
+        result = call_with_retry(
+            f"作品详情 {item.artwork_id}",
+            lambda: self.api.illust_detail(item.artwork_id),
+            self.config,
+            self.log,
+        )
         illust = result.get("illust")
         if not illust:
             raise RuntimeError(f"artwork detail not found: {item.artwork_id}")
@@ -656,12 +860,28 @@ class PixivDownloader:
 
     def download_url(self, url: str, target: Path) -> Path:
         tmp = target.with_suffix(target.suffix + ".part")
-        with self.session.get(url, timeout=120, stream=True) as response:
-            response.raise_for_status()
-            with tmp.open("wb") as file:
-                for chunk in response.iter_content(chunk_size=1024 * 512):
-                    if chunk:
-                        file.write(chunk)
+        net = network_config(self.config)
+        attempts = max(1, int_config(net, "download_retries", 4, minimum=1))
+        backoff = float_config(net, "download_retry_backoff_seconds", 2.0)
+        for attempt in range(1, attempts + 1):
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+                with self.session.get(url, timeout=120, stream=True) as response:
+                    response.raise_for_status()
+                    with tmp.open("wb") as file:
+                        for chunk in response.iter_content(chunk_size=1024 * 512):
+                            if chunk:
+                                file.write(chunk)
+                break
+            except Exception as error:
+                if tmp.exists():
+                    tmp.unlink(missing_ok=True)
+                if attempt >= attempts or not is_transient_network_error(error):
+                    raise
+                sleep_seconds = backoff * (2 ** (attempt - 1)) + random.uniform(0, 1.5)
+                self.log.write(f"下载网络异常，{sleep_seconds:.1f}s 后重试 {attempt + 1}/{attempts}: {target.name} {error}")
+                time.sleep(sleep_seconds)
         tmp.replace(target)
         if target.stat().st_size <= 0:
             raise RuntimeError(f"downloaded empty file: {target}")
@@ -690,7 +910,12 @@ class PixivDownloader:
     def download_ugoira(self, item: Artwork) -> list[str]:
         detail = self.fetch_detail(item)
         out_dir = self.artwork_dir(detail)
-        result = self.api.ugoira_metadata(detail.artwork_id)
+        result = call_with_retry(
+            f"ugoira metadata {detail.artwork_id}",
+            lambda: self.api.ugoira_metadata(detail.artwork_id),
+            self.config,
+            self.log,
+        )
         metadata = result.get("ugoira_metadata") or {}
         zip_urls = metadata.get("zip_urls") or {}
         zip_url = zip_urls.get("original") or zip_urls.get("medium")
@@ -704,7 +929,7 @@ class PixivDownloader:
         zip_path = tmp_dir / f"{detail.artwork_id}.zip"
         self.download_url(zip_url, zip_path)
         with zipfile.ZipFile(zip_path) as archive:
-            archive.extractall(tmp_dir)
+            safe_extract_zip(archive, tmp_dir)
         target = out_dir / f"{detail.artwork_id}_ugoira_{safe_name(detail.title, detail.artwork_id)}.gif"
         self.convert_ugoira_to_gif(tmp_dir, frames, target)
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -776,7 +1001,8 @@ class PixivDownloader:
             self.store.mark_result(item.artwork_id, "done", files, "")
             return "done", files, ""
         except Exception as error:
-            self.store.mark_result(item.artwork_id, "failed", [], str(error))
+            error_type = classify_error(error)
+            self.store.mark_result(item.artwork_id, "failed", [], str(error), error_type)
             return "failed", [], str(error)
 
 
@@ -791,6 +1017,8 @@ class App:
         self.stop_event = threading.Event()
         self.next_run_at = 0.0
         self.last_run_message = ""
+        self.last_run_error_type = ""
+        self.waiting_for_token_logged = False
         self.oauth_message = ""
         self.progress_lock = threading.Lock()
         self.progress = self.empty_progress()
@@ -856,9 +1084,13 @@ class App:
 
     def make_api(self) -> tuple[AppPixivAPI, str]:
         token = read_refresh_token(self.config)
-        api = auth_api(token)
+        api = auth_api(token, self.config, self.log)
         user_id = get_own_user_id(api)
         return api, user_id
+
+    def retry_after_failure_seconds(self) -> int:
+        minutes = float_config(network_config(self.config), "retry_after_failure_minutes", 15.0, minimum=1.0)
+        return int(minutes * 60)
 
     def test_token(self) -> None:
         if not self.run_lock.acquire(blocking=False):
@@ -870,7 +1102,12 @@ class App:
             self.reload_config()
             self.set_progress({"phase": "testing"})
             api, user_id = self.make_api()
-            result = api.user_detail(user_id)
+            result = call_with_retry(
+                f"Token 测试 user_detail {user_id}",
+                lambda: api.user_detail(user_id),
+                self.config,
+                self.log,
+            )
             user = result.get("user") or {}
             self.log.write(f"Token 测试成功：user_id={user_id} name={user.get('name') or '-'}")
             message = "ok"
@@ -896,6 +1133,7 @@ class App:
         message = ""
         try:
             self.reload_config()
+            self.last_run_error_type = ""
             api, user_id = self.make_api()
             self.log.write(f"Run started for Pixiv user_id={user_id}")
             collector = PixivCollector(api, self.config, self.store, self.log, self.set_progress)
@@ -926,16 +1164,22 @@ class App:
                 if delay > 0 and index < len(artworks):
                     time.sleep(delay + random.random())
             message = "ok"
+            self.last_run_error_type = ""
             self.set_progress({"phase": "finished", "current": ""})
             self.store.finish_run(run_id, "done", stats, message)
             self.log.write(f"Run finished: {stats}")
             return stats
         except Exception as error:
             message = str(error)
+            self.last_run_error_type = classify_error(error)
             self.set_progress({"phase": "failed", "current": ""})
             self.store.finish_run(run_id, "failed", stats, message)
             self.log.write(f"Run failed: {message}")
             self.log.write(traceback.format_exc())
+            if self.last_run_error_type == "network":
+                retry_at = time.time() + self.retry_after_failure_seconds()
+                self.next_run_at = min(self.next_run_at, retry_at) if self.next_run_at else retry_at
+                self.log.write(f"检测到临时网络错误，将提前在 {datetime.fromtimestamp(self.next_run_at).isoformat()} 重试")
             raise
         finally:
             self.last_run_message = message
@@ -1002,8 +1246,15 @@ class App:
             if self.next_run_at <= 0:
                 self.next_run_at = time.time() + 5
             if time.time() >= self.next_run_at and not self.running:
-                self.start_run_thread()
-                self.next_run_at = time.time() + interval
+                if self.token_present():
+                    self.waiting_for_token_logged = False
+                    self.start_run_thread()
+                    self.next_run_at = time.time() + interval
+                else:
+                    if not self.waiting_for_token_logged:
+                        self.log.write("未找到 refresh-token，自动运行暂缓；请先在网页端保存 Token")
+                        self.waiting_for_token_logged = True
+                    self.next_run_at = time.time() + 60
             self.stop_event.wait(5)
 
     def status(self) -> dict[str, Any]:
@@ -1026,6 +1277,7 @@ class App:
             "artworks": self.store.recent_artworks(),
             "logs": self.log.lines(),
             "last_run_message": self.last_run_message,
+            "last_run_error_type": self.last_run_error_type,
             "run_interval_hours": interval_hours(self.config),
         }
 

@@ -1,9 +1,12 @@
 FROM mcr.microsoft.com/playwright/python:v1.56.0-noble
 
+ARG APP_VERSION=v1.1.6
+
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     TZ=Asia/Shanghai \
-    BROWSER_LOCK_PATH=/tmp/nas-auto-browser.lock
+    BROWSER_LOCK_PATH=/tmp/nas-auto-browser.lock \
+    APP_VERSION=${APP_VERSION}
 
 WORKDIR /opt/nas-auto
 
