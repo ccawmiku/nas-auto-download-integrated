@@ -586,10 +586,11 @@ class App:
         self.f2_latest_version = ""
         self.f2_version_checked_at = ""
         self.f2_version_message = "尚未检查"
+        self._job_config_signature = ""
         self.ensure_dirs()
         self.start_version_check_thread()
 
-    def ensure_dirs(self) -> None:
+    def ensure_dirs(self, sync_configs: bool = True) -> None:
         for key in ["f2_state_dir", "f2_config_dir", "download_dir"]:
             Path(str(self.config.get(key) or "")).mkdir(parents=True, exist_ok=True)
         Path(str(self.config.get("cookie_file") or "")).parent.mkdir(parents=True, exist_ok=True)
@@ -600,14 +601,29 @@ class App:
             yaml.safe_dump(load_f2_runtime_conf(), allow_unicode=True, sort_keys=False, width=100000),
             encoding="utf-8",
         )
-        self.sync_job_configs()
+        if sync_configs:
+            self.sync_job_configs()
+
+    def job_config_signature(self) -> str:
+        payload = {
+            "cookie": read_cookie(str(self.config.get("cookie_file") or "")),
+            "download_dir": self.config.get("download_dir"),
+            "defaults": self.config.get("defaults"),
+            "f2_config_dir": self.config.get("f2_config_dir"),
+            "jobs": self.config.get("jobs"),
+        }
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
     def sync_job_configs(self) -> None:
+        signature = self.job_config_signature()
+        if signature == self._job_config_signature:
+            return
         for index, job in enumerate(self.config.get("jobs") or []):
             key = job_key(job, index)
             config_path = Path(str(self.config.get("f2_config_dir") or "/config/douyin/f2")) / f"{key}.yaml"
             config_path.parent.mkdir(parents=True, exist_ok=True)
             config_path.write_text(render_douyin_job_yaml(build_douyin_job_payload(self.config, job)), encoding="utf-8")
+        self._job_config_signature = signature
 
     def reload_config(self) -> None:
         self.config = load_config(self.config_path)
@@ -854,7 +870,7 @@ class App:
             self.reload_config()
             if self.next_run_at <= 0:
                 self.schedule_next_run()
-            if time.time() >= self.next_run_at and not self.running:
+            if time.time() >= self.next_run_at and not self.running and not self.run_pending:
                 if self.cookie_present():
                     self.start_run_thread()
                 else:

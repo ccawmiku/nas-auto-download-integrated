@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlsplit
 PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
 BROWSER_LOCK_PATH = os.environ.get("BROWSER_LOCK_PATH", "/tmp/nas-auto-browser.lock")
-APP_VERSION = os.environ.get("APP_VERSION", "v1.3.6")
+APP_VERSION = os.environ.get("APP_VERSION", "v1.4.0-dev")
 DOUYIN_CONFIG_PATH = Path(os.environ.get("DOUYIN_CONFIG_PATH", "/config/douyin/config.json"))
 DOUYIN_COOKIE_YAML_PLACEHOLDER = "__DOUYIN_COOKIE_PLACEHOLDER__"
 DEFAULT_DOUYIN_CONFIG: dict[str, Any] = {
@@ -686,15 +686,25 @@ def page(message: str = "") -> bytes:
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>NAS Auto Download</title>
 <style>
-body{{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#f5f7fb;color:#182033}}
-header{{background:#111827;color:#fff;padding:18px 24px}} main{{max-width:1100px;margin:0 auto;padding:20px;display:grid;gap:16px}}
-.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}} .card,section{{background:#fff;border:1px solid #d8dee9;border-radius:8px;padding:16px}}
-.card{{display:grid;gap:6px;text-decoration:none;color:inherit}} .card strong{{font-size:18px}} .card span,.muted{{color:#64748b}} .card em{{font-style:normal;color:#64748b}} .card.ready em{{color:#047857}} .card.starting em{{color:#b45309}}
-textarea,input[type=file]{{width:100%;box-sizing:border-box;border:1px solid #d8dee9;border-radius:6px;padding:10px;font:inherit;background:white}} textarea{{min-height:140px}} button{{border:0;border-radius:6px;background:#111827;color:white;padding:9px 14px;cursor:pointer}}
-pre{{background:#0f172a;color:#dbeafe;padding:12px;border-radius:6px;overflow:auto;max-height:360px;white-space:pre-wrap}}
+:root{{--bg:#f6f7f9;--panel:#fff;--line:#d9dde5;--text:#1d2433;--muted:#657084;--accent:#111827;--ok:#047857;--warn:#b45309}}
+body{{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:var(--bg);color:var(--text)}}
+header{{min-height:64px;display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--accent);color:#fff;padding:0 24px}}
+h1{{font-size:19px;margin:0}} h2{{font-size:16px;margin:0 0 12px}}
+main{{max-width:1120px;margin:0 auto;padding:20px;display:grid;gap:16px}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}}
+section,.card{{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px}}
+.card{{display:grid;grid-template-columns:1fr auto;gap:5px 12px;text-decoration:none;color:inherit;transition:border-color .15s,box-shadow .15s}}
+.card:hover{{border-color:#9aa7b7;box-shadow:0 1px 5px rgba(15,23,42,.08)}}
+.card strong{{font-size:17px}} .card span{{color:var(--muted);grid-column:1/-1}} .card em{{font-style:normal;border-radius:999px;padding:2px 8px;background:#eef2f7;color:var(--muted);font-size:12px}}
+.card.ready em{{background:#ecfdf5;color:var(--ok)}} .card.starting em{{background:#fff7ed;color:var(--warn)}}
+.muted{{color:var(--muted)}} .pill{{display:inline-flex;align-items:center;border-radius:999px;background:#e6edf6;color:#334155;padding:3px 8px;font-size:12px}}
+textarea,input[type=file]{{width:100%;box-sizing:border-box;border:1px solid var(--line);border-radius:6px;padding:10px;font:inherit;background:white}}
+textarea{{min-height:140px;resize:vertical}} button{{border:0;border-radius:6px;background:var(--accent);color:white;padding:9px 14px;cursor:pointer}}
+pre{{background:#0f172a;color:#dbeafe;padding:12px;border-radius:6px;overflow:auto;max-height:360px;white-space:pre-wrap;overflow-wrap:anywhere}}
 .ok{{background:#ecfdf5;border-color:#bbf7d0}}
+@media(max-width:760px){{header{{padding:10px 14px;align-items:flex-start;flex-direction:column}}main{{padding:12px}}}}
 </style></head><body>
-<header><h1>NAS Auto Download</h1><div>统一入口：小红书 / X / Pixiv / 抖音 · {html.escape(APP_VERSION)}</div></header>
+<header><h1>NAS Auto Download</h1><div><span class="pill">小红书 / X / Pixiv / 抖音</span> <span class="pill">{html.escape(APP_VERSION)}</span></div></header>
 <main>
 {f'<section class="ok">{html.escape(message)}</section>' if message else ''}
 <section><h2>服务入口</h2><div class="grid">{cards}</div><p class="muted">无头浏览器锁：{lock}</p></section>
