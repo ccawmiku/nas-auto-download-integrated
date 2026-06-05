@@ -25,7 +25,7 @@ docker compose up -d
 默认镜像：
 
 ```text
-ghcr.io/ccawmiku/nas-auto-download-integrated:v1.2.0
+ghcr.io/ccawmiku/nas-auto-download-integrated:v1.3.0
 ```
 
 每次发布都会同步更新 `docker-compose.yml` 里的镜像版本。NAS 端更新时执行 `docker compose pull && docker compose up -d`，避免复用旧镜像 tag。
@@ -70,6 +70,8 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.2.0
 - 导入器会自动拆出小红书、X 和抖音所需 Cookie
 - Pixiv 页面内可以生成登录链接、粘贴 callback/code、换取 refresh-token
 - 抖音页面会显示当前 f2 版本、PyPI 最新版本和检查时间，可手动触发版本检查
+- 抖音页面支持单独粘贴 `app.yaml` 里的 `cookie:` 段并直接保存，不依赖统一首页导入
+- 抖音日志会自动刷新，长行会换行，Cookie 和 URL 参数会做脱敏/截断
 - 子页面顶部会显示“返回统一主页”
 
 ## 抖音 f2 迁移
@@ -81,7 +83,7 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.2.0
 /volume2/docker/nas-auto-download-integrated/douyin/f2/database/douyin_videos.db
 ```
 
-如果之前在青龙面板里已经跑过 f2，把原来的 `douyin_users.db` 放到上面的 `database` 目录即可延续点赞/收藏记录；有 `douyin_videos.db` 也可以一起放进去，没有也能运行，f2 需要时会自行创建。抖音 Cookie 从统一主页的一次性 Cookie 导入写入 `/config/douyin/douyin_cookie.txt`，不需要写进 YAML。导入器会保留 cookies.txt 里所有 `douyin.com` 域名下的 Cookie，生成给 f2 的任务 YAML 时保持单行 Cookie 字符串。
+如果之前在青龙面板里已经跑过 f2，把原来的 `douyin_users.db` 放到上面的 `database` 目录即可延续点赞/收藏记录；有 `douyin_videos.db` 也可以一起放进去，没有也能运行，f2 需要时会自行创建。抖音 Cookie 会写入 `/config/douyin/douyin_cookie.txt`，既支持统一主页从 `cookies.txt` 拆分导入，也支持在抖音页面直接粘贴 `app.yaml` 里的 `cookie:` 段单独保存。生成给 f2 的任务 YAML 继续保持与参考配置一致的单行 Cookie 字符串，并默认写入 `/F2DL`、`mode: like/collection`、`folderize: true`、`cover: false` 和 `{create}-{nickname}-{aweme_id}` 命名。
 
 下载目录挂载为 `/volume2/qinlong-debian/F2DL:/F2DL`。f2 会按配置里的 `mode` 自动保存到：
 

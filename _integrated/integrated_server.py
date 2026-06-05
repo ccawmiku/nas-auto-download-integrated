@@ -22,7 +22,7 @@ from urllib.parse import parse_qs, urlsplit
 PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
 BROWSER_LOCK_PATH = os.environ.get("BROWSER_LOCK_PATH", "/tmp/nas-auto-browser.lock")
-APP_VERSION = os.environ.get("APP_VERSION", "v1.2.0")
+APP_VERSION = os.environ.get("APP_VERSION", "v1.3.0")
 
 SERVICES = {
     "xhs": {"name": "小红书", "port": 18081, "path": "/xhs/", "config": "/config/xhs/config.json"},
@@ -110,6 +110,9 @@ SITE_RULES = {
         },
     },
 }
+
+COOKIE_LINE_RE = re.compile(r"^\s*cookie\s*:\s*", re.IGNORECASE)
+YAML_KEY_RE = re.compile(r"^\s*[A-Za-z0-9_-]+\s*:\s*")
 
 
 processes: list[tuple[str, subprocess.Popen]] = []
@@ -315,6 +318,50 @@ def parse_cookie_header(text: str) -> dict[str, str]:
     return values
 
 
+def parse_cookie_pairs(text: str) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for part in str(text or "").replace("\r", "").split(";"):
+        item = part.strip()
+        if "=" not in item:
+            continue
+        name, value = item.split("=", 1)
+        name = name.strip()
+        value = value.strip()
+        if not name:
+            continue
+        if name in seen:
+            pairs = [pair for pair in pairs if pair[0] != name]
+        seen.add(name)
+        pairs.append((name, value))
+    return pairs
+
+
+def extract_douyin_cookie_text(text: str) -> str:
+    lines = str(text or "").replace("\r", "").splitlines()
+    if not lines:
+        return ""
+    collected: list[str] = []
+    collecting = False
+    for raw in lines:
+        if not raw.strip():
+            continue
+        if not collecting and COOKIE_LINE_RE.match(raw):
+            collecting = True
+            tail = COOKIE_LINE_RE.sub("", raw, count=1).strip()
+            if tail:
+                collected.append(tail)
+            continue
+        if collecting:
+            stripped = raw.strip()
+            if YAML_KEY_RE.match(raw) and "=" not in stripped:
+                break
+            collected.append(stripped)
+            continue
+        collected.append(raw.strip())
+    return "; ".join(f"{name}={value}" for name, value in parse_cookie_pairs(" ".join(collected)))
+
+
 def parse_netscape_cookies(text: str) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for line in text.splitlines():
@@ -344,7 +391,9 @@ def import_all_cookie(text: str) -> dict[str, Any]:
     rows = parse_netscape_cookies(text)
     result: dict[str, Any] = {}
     for key, rule in SITE_RULES.items():
-        if rule.get("all_names"):
+        if key == "douyin" and not rows:
+            selected = dict(parse_cookie_pairs(extract_douyin_cookie_text(text)))
+        elif rule.get("all_names"):
             selected = dict(values)
         else:
             selected = {name: values[name] for name in sorted(rule["names"]) if name in values}

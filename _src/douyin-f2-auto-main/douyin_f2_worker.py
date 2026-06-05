@@ -5,6 +5,7 @@ import argparse
 import html
 import json
 import os
+import re
 import signal
 import sqlite3
 import subprocess
@@ -70,6 +71,37 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "web": {"host": "0.0.0.0", "port": 8080, "log_lines": 400},
 }
 
+DOUYIN_COOKIE_DOMAINS = {"douyin.com", ".douyin.com", "www.douyin.com", ".www.douyin.com"}
+COOKIE_LINE_RE = re.compile(r"^\s*cookie\s*:\s*", re.IGNORECASE)
+YAML_KEY_RE = re.compile(r"^\s*[A-Za-z0-9_-]+\s*:\s*")
+URL_QUERY_RE = re.compile(r"(https?://[^\s?]+)\?[^\s]+")
+COOKIE_ASSIGN_RE = re.compile(r"([A-Za-z0-9_.-]+)=([^;]+)")
+SENSITIVE_COOKIE_NAMES = {
+    "__ac_nonce",
+    "__ac_signature",
+    "__security_mc_1_s_sdk_cert_key",
+    "__security_mc_1_s_sdk_crypt_sdk",
+    "__security_mc_1_s_sdk_sign_data_key_web_protect",
+    "__security_server_data_status",
+    "_bd_ticket_crypt_cookie",
+    "bd_ticket_guard_client_data",
+    "bd_ticket_guard_client_data_v2",
+    "msToken",
+    "passport_csrf_token",
+    "passport_csrf_token_default",
+    "passport_mfa_token",
+    "sessionid",
+    "sessionid_ss",
+    "sid_guard",
+    "sid_tt",
+    "sid_ucp_v1",
+    "ssid_ucp_v1",
+    "ttwid",
+    "UIFID",
+    "UIFID_TEMP",
+}
+COOKIE_REQUIRED_NAMES = ("sessionid", "ttwid")
+
 
 @dataclass
 class RunResult:
@@ -88,7 +120,10 @@ class RingLog:
         self._lines: list[str] = []
 
     def write(self, message: str) -> None:
-        line = f"[{now_iso()}] {message}"
+        safe_message = sanitize_log_message(message)
+        if not safe_message:
+            return
+        line = f"[{now_iso()}] {safe_message}"
         print(line, flush=True)
         with self._lock:
             self._lines.append(line)
@@ -136,6 +171,124 @@ def read_cookie(path_value: str) -> str:
     return path.read_text(encoding="utf-8-sig").strip()
 
 
+def parse_cookie_pairs(cookie_text: str) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for part in str(cookie_text or "").replace("\r", "").split(";"):
+        item = part.strip()
+        if "=" not in item:
+            continue
+        name, value = item.split("=", 1)
+        name = name.strip()
+        value = value.strip()
+        if not name:
+            continue
+        if name in seen:
+            pairs = [pair for pair in pairs if pair[0] != name]
+        seen.add(name)
+        pairs.append((name, value))
+    return pairs
+
+
+def extract_cookie_block(text: str) -> str:
+    lines = str(text or "").replace("\r", "").splitlines()
+    if not lines:
+        return ""
+    collected: list[str] = []
+    collecting = False
+    for raw in lines:
+        if not raw.strip():
+            continue
+        if not collecting and COOKIE_LINE_RE.match(raw):
+            collecting = True
+            tail = COOKIE_LINE_RE.sub("", raw, count=1).strip()
+            if tail:
+                collected.append(tail)
+            continue
+        if collecting:
+            stripped = raw.strip()
+            if YAML_KEY_RE.match(raw) and "=" not in stripped:
+                break
+            collected.append(stripped)
+            continue
+        collected.append(raw.strip())
+    return " ".join(item for item in collected if item).strip()
+
+
+def normalize_cookie_text(text: str) -> str:
+    rows: list[tuple[str, str]] = []
+    for line in str(text or "").replace("\r", "").splitlines():
+        parts = line.strip().split("\t")
+        if len(parts) >= 7:
+            domain = parts[0].strip().removeprefix("#HttpOnly_")
+            if domain not in DOUYIN_COOKIE_DOMAINS:
+                continue
+            name = parts[5].strip()
+            value = parts[6].strip()
+            if name:
+                rows.append((name, value))
+    if rows:
+        return "; ".join(f"{name}={value}" for name, value in rows)
+    return "; ".join(f"{name}={value}" for name, value in parse_cookie_pairs(extract_cookie_block(text)))
+
+
+def cookie_summary(cookie_text: str) -> dict[str, Any]:
+    pairs = parse_cookie_pairs(cookie_text)
+    names = [name for name, _value in pairs]
+    available = set(names)
+    missing_required = [name for name in COOKIE_REQUIRED_NAMES if name not in available]
+    return {
+        "present": bool(pairs),
+        "length": len(cookie_text),
+        "fields": len(pairs),
+        "names": names,
+        "has_sessionid": "sessionid" in available,
+        "has_ttwid": "ttwid" in available,
+        "missing_required": missing_required,
+        "status": "可用" if pairs and not missing_required else ("缺少关键字段" if pairs else "未导入"),
+    }
+
+
+def cookie_summary_text(cookie_text: str) -> str:
+    summary = cookie_summary(cookie_text)
+    if not summary["present"]:
+        return "未导入"
+    base = f"{summary['fields']} 项 / {summary['length']} 字符"
+    if summary["missing_required"]:
+        return f"{base}，缺少 {', '.join(summary['missing_required'])}"
+    return f"{base}，sessionid/ttwid 已就绪"
+
+
+def sanitize_log_message(message: str, max_length: int = 640) -> str:
+    text = str(message or "").replace("\r", "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if "cookie:" in lowered:
+        cookie_text = normalize_cookie_text(text)
+        return re.sub(
+            r"cookie\s*:.*",
+            f"cookie: [redacted {cookie_summary_text(cookie_text)}]",
+            text,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+    if text.count(";") >= 2:
+        pairs = parse_cookie_pairs(text)
+        sensitive_names = {name for name, _value in pairs if name in SENSITIVE_COOKIE_NAMES}
+        if pairs and sensitive_names:
+            return f"[cookie redacted {cookie_summary_text(text)}]"
+    text = URL_QUERY_RE.sub(r"\1?[redacted]", text)
+    text = COOKIE_ASSIGN_RE.sub(
+        lambda match: f"{match.group(1)}=[redacted]" if match.group(1) in SENSITIVE_COOKIE_NAMES else match.group(0),
+        text,
+    )
+    if len(text) > max_length:
+        extra = len(text) - max_length
+        text = f"{text[:max_length]} ... [truncated {extra} chars]"
+    return text
+
+
 def bool_form(form: dict[str, list[str]], key: str) -> bool:
     return (form.get(key) or [""])[0] in {"1", "true", "on", "yes"}
 
@@ -161,12 +314,15 @@ class App:
         self.config = load_config(config_path)
         self.log = RingLog(int(self.config.get("web", {}).get("log_lines", 400)))
         self.run_lock = threading.Lock()
+        self.run_request_lock = threading.Lock()
         self.running = False
+        self.run_pending = False
         self.stop_event = threading.Event()
         self.next_run_at = 0.0
         self.current_job = ""
         self.last_results: list[RunResult] = []
         self.last_run_message = ""
+        self.last_notice = ""
         self.f2_installed_version = str(getattr(f2, "__version__", "") or "unknown")
         self.f2_latest_version = ""
         self.f2_version_checked_at = ""
@@ -191,6 +347,27 @@ class App:
 
     def cookie_present(self) -> bool:
         return bool(read_cookie(str(self.config.get("cookie_file") or "")))
+
+    def interval_seconds(self) -> int:
+        return max(60, int(float(self.config.get("run_interval_hours") or 12) * 3600))
+
+    def schedule_next_run(self) -> None:
+        self.next_run_at = time.time() + self.interval_seconds()
+
+    def set_notice(self, message: str) -> None:
+        self.last_notice = message
+
+    def save_cookie(self, text: str) -> str:
+        normalized = normalize_cookie_text(text)
+        if not normalized:
+            raise ValueError("未识别到可保存的抖音 Cookie")
+        output = Path(str(self.config.get("cookie_file") or ""))
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(normalized + "\n", encoding="utf-8")
+        summary_text = cookie_summary_text(normalized)
+        self.log.write(f"已更新抖音 Cookie：{summary_text}")
+        self.set_notice(f"抖音 Cookie 已保存：{summary_text}")
+        return normalized
 
     def db_status(self) -> dict[str, Any]:
         state_dir = Path(str(self.config.get("f2_state_dir") or "/state/douyin/f2"))
@@ -335,7 +512,7 @@ class App:
         try:
             self.reload_config()
             if not self.cookie_present():
-                raise RuntimeError("未找到抖音 Cookie，请先在统一主页导入 Cookie 文件")
+                raise RuntimeError("未找到抖音 Cookie，请先在抖音页或统一主页导入 Cookie")
             self.log.write("抖音 f2 运行开始")
             jobs = list(self.config.get("jobs") or [])
             for index, job in enumerate(jobs):
@@ -360,25 +537,36 @@ class App:
             self.running = False
             self.run_lock.release()
 
-    def start_run_thread(self, only_job: str = "") -> None:
+    def start_run_thread(self, only_job: str = "") -> bool:
+        with self.run_request_lock:
+            if self.running or self.run_pending:
+                target = only_job or "全部任务"
+                message = f"{target}: 已有抖音任务在运行，已阻止重复启动"
+                self.log.write(message)
+                self.set_notice(message)
+                return False
+            self.run_pending = True
+            self.schedule_next_run()
         threading.Thread(target=lambda: self._thread_wrap(self.run_once, only_job), daemon=True).start()
+        return True
 
     def _thread_wrap(self, fn: Any, *args: Any) -> None:
         try:
             fn(*args)
         except Exception:
             pass
+        finally:
+            with self.run_request_lock:
+                self.run_pending = False
 
     def scheduler_loop(self) -> None:
         while not self.stop_event.is_set():
             self.reload_config()
-            interval = max(60, int(float(self.config.get("run_interval_hours") or 12) * 3600))
             if self.next_run_at <= 0:
-                self.next_run_at = time.time() + 5
+                self.schedule_next_run()
             if time.time() >= self.next_run_at and not self.running:
                 if self.cookie_present():
                     self.start_run_thread()
-                    self.next_run_at = time.time() + interval
                 else:
                     self.log.write("未找到抖音 Cookie，自动运行暂缓")
                     self.next_run_at = time.time() + 60
@@ -390,6 +578,7 @@ class App:
             "current_job": self.current_job,
             "next_run_at": datetime.fromtimestamp(self.next_run_at).isoformat() if self.next_run_at else "",
             "cookie_present": self.cookie_present(),
+            "cookie_summary": cookie_summary(read_cookie(str(self.config.get("cookie_file") or ""))),
             "config": self.config,
             "db": self.db_status(),
             "f2_version": {
@@ -400,6 +589,7 @@ class App:
             },
             "last_results": [item.__dict__ for item in self.last_results],
             "last_run_message": self.last_run_message,
+            "notice": self.last_notice,
             "logs": self.log.lines(),
         }
 
@@ -407,6 +597,7 @@ class App:
 def html_page(app: App) -> str:
     data = app.status()
     cfg = data["config"]
+    cookie_info = data["cookie_summary"]
     jobs_html = ""
     for index, job in enumerate(cfg.get("jobs") or []):
         key = job_key(job, index)
@@ -426,18 +617,32 @@ def html_page(app: App) -> str:
 body{{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#f6f7f9;color:#1d2433}}
 header{{min-height:56px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 24px;background:#111827;color:white}}
 main{{max-width:1180px;margin:0 auto;padding:20px;display:grid;gap:16px}}section{{background:#fff;border:1px solid #d9dde5;border-radius:8px;padding:16px}}
-h1{{font-size:18px;margin:0}}h2{{font-size:16px;margin:0 0 12px}}input{{box-sizing:border-box;border:1px solid #d9dde5;border-radius:6px;padding:8px;font:inherit;background:white}}
+h1{{font-size:18px;margin:0}}h2{{font-size:16px;margin:0 0 12px}}input,textarea{{box-sizing:border-box;border:1px solid #d9dde5;border-radius:6px;padding:8px;font:inherit;background:white}}
 button{{border:0;background:#111827;color:white;border-radius:6px;padding:8px 12px;cursor:pointer}}button.secondary{{background:#475569}}
 .muted{{color:#657084}}.pill{{display:inline-flex;align-items:center;padding:3px 8px;border-radius:999px;background:#e6edf6;font-size:12px;color:#334155}}
 .actions{{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}}
 .job{{display:grid;grid-template-columns:120px 130px 120px minmax(260px,1fr) 72px;gap:8px;align-items:center;margin:8px 0}}
-pre{{margin:0;background:#0f172a;color:#dbeafe;padding:12px;border-radius:6px;overflow:auto;max-height:520px;white-space:pre-wrap}}
+pre{{margin:0;background:#0f172a;color:#dbeafe;padding:12px;border-radius:6px;overflow:auto;max-height:520px;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}}
+textarea{{min-height:120px;resize:vertical}}
+.ok{{background:#ecfdf5;border-color:#bbf7d0}}
 @media(max-width:820px){{header{{padding:10px 14px;align-items:flex-start;flex-direction:column}}main{{padding:12px}}.job{{grid-template-columns:1fr}}}}
 </style></head><body>
-<header><h1>Douyin F2 Downloader</h1><div><span class="pill">运行：{"运行中" if data["running"] else "空闲"}</span> <span class="pill">Cookie：{"已导入" if data["cookie_present"] else "未导入"}</span></div></header>
+<header><h1>Douyin F2 Downloader</h1><div><span class="pill" id="runState">运行：{"运行中" if data["running"] else "空闲"}</span> <span class="pill" id="cookieState">Cookie：{html.escape(str(cookie_info["status"]))}</span></div></header>
 <main>
-<section><h2>控制</h2><div class="muted">下一次自动运行：{html.escape(data["next_run_at"] or "未排程")}；当前任务：{html.escape(data["current_job"] or "-")}</div>
+{f'<section class="ok" id="noticeBox">{html.escape(str(data["notice"]))}</section>' if data["notice"] else '<section class="ok" id="noticeBox" style="display:none"></section>'}
+<section><h2>控制</h2><div class="muted">下一次自动运行：<span id="nextRunAt">{html.escape(data["next_run_at"] or "未排程")}</span>；当前任务：<span id="currentJob">{html.escape(data["current_job"] or "-")}</span></div>
 <div class="actions"><form method="post" action="/run"><button type="submit">立即运行全部</button></form><form method="post" action="/reload"><button class="secondary" type="submit">重新读取配置</button></form><form method="post" action="/check-version"><button class="secondary" type="submit">检查 f2 版本</button></form></div></section>
+<section><h2>抖音 Cookie</h2><div class="grid">
+<div>状态<br><strong id="cookieStatus">{html.escape(str(cookie_info["status"]))}</strong></div>
+<div>字段数<br><strong id="cookieFields">{html.escape(str(cookie_info["fields"]))}</strong></div>
+<div>长度<br><strong id="cookieLength">{html.escape(str(cookie_info["length"]))}</strong></div>
+<div>关键字段<br><strong id="cookieRequired">{html.escape("完整" if not cookie_info["missing_required"] and cookie_info["present"] else ", ".join(cookie_info["missing_required"]) or "-")}</strong></div>
+</div>
+<p class="muted">支持直接粘贴 `app.yaml` 里的 `cookie:` 段或单行 Cookie header。保存时只写入抖音专用 Cookie，不会在页面或日志里显示明文。</p>
+<form method="post" action="/cookie">
+<textarea name="cookie_text" placeholder="cookie: sessionid=...; ttwid=..."></textarea>
+<div class="actions"><button type="submit">保存抖音 Cookie</button></div>
+</form></section>
 <section><h2>f2 版本</h2><div class="grid">
 <div>当前版本<br><strong>{html.escape(str(data["f2_version"]["installed"]))}</strong></div>
 <div>最新版本<br><strong>{html.escape(str(data["f2_version"]["latest"] or "-"))}</strong></div>
@@ -455,9 +660,37 @@ pre{{margin:0;background:#0f172a;color:#dbeafe;padding:12px;border-radius:6px;ov
 <div>douyin_users.db<br><strong>{data["db"]["douyin_users.db"]["rows"] if data["db"]["douyin_users.db"]["rows"] is not None else "-"}</strong><br><span class="muted">点赞/收藏记录</span></div>
 <div>douyin_videos.db<br><strong>{data["db"]["douyin_videos.db"]["rows"] if data["db"]["douyin_videos.db"]["rows"] is not None else "-"}</strong><br><span class="muted">没有也可运行</span></div>
 </div></section>
-<section><h2>最近结果</h2><pre>{html.escape(json.dumps(data["last_results"], ensure_ascii=False, indent=2))}</pre></section>
+<section><h2>最近结果</h2><pre id="resultsBox">{html.escape(json.dumps(data["last_results"], ensure_ascii=False, indent=2))}</pre></section>
 <section><h2>日志</h2><pre id="logBox">{html.escape(chr(10).join(data["logs"][-120:]))}</pre></section>
-</main></body></html>"""
+</main>
+<script>
+const refreshStatus = async () => {{
+  try {{
+    const resp = await fetch("/api/status", {{ cache: "no-store" }});
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const cookie = data.cookie_summary || {{}};
+    document.getElementById("runState").textContent = `运行：${{data.running ? "运行中" : "空闲"}}`;
+    document.getElementById("cookieState").textContent = `Cookie：${{cookie.status || "未导入"}}`;
+    document.getElementById("nextRunAt").textContent = data.next_run_at || "未排程";
+    document.getElementById("currentJob").textContent = data.current_job || "-";
+    document.getElementById("cookieStatus").textContent = cookie.status || "未导入";
+    document.getElementById("cookieFields").textContent = String(cookie.fields || 0);
+    document.getElementById("cookieLength").textContent = String(cookie.length || 0);
+    document.getElementById("cookieRequired").textContent = cookie.present ? ((cookie.missing_required || []).length ? cookie.missing_required.join(", ") : "完整") : "-";
+    document.getElementById("resultsBox").textContent = JSON.stringify(data.last_results || [], null, 2);
+    document.getElementById("logBox").textContent = (data.logs || []).slice(-120).join("\\n");
+    const noticeBox = document.getElementById("noticeBox");
+    if (data.notice) {{
+      noticeBox.style.display = "";
+      noticeBox.textContent = data.notice;
+    }}
+  }} catch (_error) {{
+  }}
+}};
+setInterval(refreshStatus, 5000);
+</script>
+</body></html>"""
     return body
 
 
@@ -497,12 +730,22 @@ def make_handler(app: App):
                 app.start_run_thread(name)
                 redirect(self)
                 return
+            if self.path == "/cookie":
+                try:
+                    app.save_cookie((form.get("cookie_text") or [""])[0])
+                except ValueError as error:
+                    app.set_notice(str(error))
+                    app.log.write(str(error))
+                redirect(self)
+                return
             if self.path == "/reload":
                 app.reload_config()
+                app.set_notice("已重新读取抖音配置")
                 redirect(self)
                 return
             if self.path == "/check-version":
                 app.start_version_check_thread()
+                app.set_notice("已触发 f2 版本检查")
                 redirect(self)
                 return
             if self.path == "/settings":
@@ -536,6 +779,7 @@ def make_handler(app: App):
                     }
                 )
                 app.log.write("已从网页端保存抖音配置")
+                app.set_notice("抖音配置已保存")
                 redirect(self)
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
