@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import importlib.resources
 import json
 import os
 import re
@@ -231,6 +232,24 @@ def save_config(path: Path, config: dict[str, Any]) -> None:
     path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def build_f2_runtime_conf(template: dict[str, Any] | None = None) -> dict[str, Any]:
+    config = json.loads(json.dumps(template or {}))
+    f2_conf = config.setdefault("f2", {})
+    f2_conf["enable_bark"] = False
+    return config
+
+
+def load_f2_runtime_conf() -> dict[str, Any]:
+    if f2 is None:
+        return build_f2_runtime_conf()
+    try:
+        package_conf = importlib.resources.files("f2").joinpath("conf/conf.yaml")
+        template = yaml.safe_load(package_conf.read_text(encoding="utf-8")) or {}
+        return build_f2_runtime_conf(template)
+    except Exception:
+        return build_f2_runtime_conf()
+
+
 def read_cookie(path_value: str) -> str:
     path = Path(str(path_value or ""))
     if not path.exists() or not path.is_file():
@@ -429,6 +448,13 @@ class App:
         for key in ["f2_state_dir", "f2_config_dir", "download_dir"]:
             Path(str(self.config.get(key) or "")).mkdir(parents=True, exist_ok=True)
         Path(str(self.config.get("cookie_file") or "")).parent.mkdir(parents=True, exist_ok=True)
+        state_dir = Path(str(self.config.get("f2_state_dir") or "/state/douyin/f2"))
+        runtime_conf = state_dir / "conf" / "conf.yaml"
+        runtime_conf.parent.mkdir(parents=True, exist_ok=True)
+        runtime_conf.write_text(
+            yaml.safe_dump(load_f2_runtime_conf(), allow_unicode=True, sort_keys=False, width=100000),
+            encoding="utf-8",
+        )
 
     def reload_config(self) -> None:
         self.config = load_config(self.config_path)

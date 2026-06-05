@@ -13,14 +13,14 @@ sys.path.insert(0, str(ROOT / "_src" / "douyin-f2-auto-main"))
 sys.path.insert(0, str(ROOT / "_src" / "pixiv-auto-download-nas-main"))
 
 import integrated_server
-from douyin_f2_worker import cookie_summary, normalize_cookie_text
+from douyin_f2_worker import build_f2_runtime_conf, cookie_summary, normalize_cookie_text
 from pixiv_auto_worker import classify_error, safe_extract_zip
 
 
 class IntegratedPageTests(unittest.TestCase):
     def test_home_page_includes_version_and_service_cards(self) -> None:
         body = integrated_server.page().decode("utf-8")
-        self.assertIn("v1.3.0", body)
+        self.assertIn("v1.3.1", body)
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)
@@ -62,6 +62,13 @@ class IntegratedPageTests(unittest.TestCase):
 
 
 class DouyinCookieTests(unittest.TestCase):
+    def test_builds_bark_disabled_runtime_conf(self) -> None:
+        runtime_conf = build_f2_runtime_conf(
+            {"f2": {"enable_bark": True, "douyin": {"headers": {"Referer": "https://www.douyin.com/"}}}}
+        )
+        self.assertFalse(runtime_conf["f2"]["enable_bark"])
+        self.assertEqual(runtime_conf["f2"]["douyin"]["headers"]["Referer"], "https://www.douyin.com/")
+
     def test_normalizes_cookie_text_and_summary(self) -> None:
         normalized = normalize_cookie_text(
             "cookie: sessionid=abc;\n"

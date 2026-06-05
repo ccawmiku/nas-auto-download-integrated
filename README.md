@@ -25,7 +25,7 @@ docker compose up -d
 默认镜像：
 
 ```text
-ghcr.io/ccawmiku/nas-auto-download-integrated:v1.3.0
+ghcr.io/ccawmiku/nas-auto-download-integrated:v1.3.1
 ```
 
 每次发布都会同步更新 `docker-compose.yml` 里的镜像版本。NAS 端更新时执行 `docker compose pull && docker compose up -d`，避免复用旧镜像 tag。
@@ -73,6 +73,7 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.3.0
 - 抖音页面支持单独粘贴 `app.yaml` 里的 `cookie:` 段并直接保存，不依赖统一首页导入
 - 抖音日志会自动刷新，长行会换行，Cookie 和 URL 参数会做脱敏/截断
 - 抖音任务默认单任务 3 分钟超时，超过后会终止并记为 `timeout`
+- 抖音运行目录会生成本地 `conf/conf.yaml` 并默认关闭 f2 的 Bark 推送，避免未配置 Bark 时额外报 405 噪音
 - 子页面顶部会显示“返回统一主页”
 
 ## 抖音 f2 迁移
