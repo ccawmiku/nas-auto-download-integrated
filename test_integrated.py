@@ -32,6 +32,9 @@ class IntegratedPageTests(unittest.TestCase):
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)
+        self.assertIn("上传 cookies.txt", body)
+        self.assertIn("粘贴 Cookie 内容", body)
+        self.assertIn("预览差异", body)
         self.assertIn("overflow-wrap:anywhere", body.replace(" ", ""))
         self.assertNotIn("__APP_STYLE__", body)
 
@@ -53,7 +56,8 @@ class IntegratedPageTests(unittest.TestCase):
                     ".douyin.com\tTRUE\t/\tTRUE\t1999999999\tttwid\tabc\n"
                     ".douyin.com\tTRUE\t/\tTRUE\t1999999999\tsessionid\tdef\n"
                     ".douyin.com\tTRUE\t/\tTRUE\t1999999999\tcustom_douyin_cookie\tghi\n"
-                    ".x.com\tTRUE\t/\tTRUE\t1999999999\tauth_token\tnope\n"
+                    ".x.com\tTRUE\t/\tTRUE\t1999999999\tauth_token\tnope\n",
+                    targets=["douyin"],
                 )
             finally:
                 integrated_server.SITE_RULES["douyin"] = old_rule
@@ -82,7 +86,8 @@ class IntegratedPageTests(unittest.TestCase):
                     "  ttwid=def;\n"
                     "  msToken=ghi;\n"
                     "  random_key=keepme;\n"
-                    "naming: '{create}-{nickname}-{aweme_id}'\n"
+                    "naming: '{create}-{nickname}-{aweme_id}'\n",
+                    targets=["douyin"],
                 )
             finally:
                 integrated_server.SITE_RULES["douyin"] = old_rule
@@ -91,6 +96,52 @@ class IntegratedPageTests(unittest.TestCase):
             self.assertEqual(output.read_text(encoding="utf-8"), "cookie: sessionid=abc;\n  ttwid=def\n")
             self.assertIn("  cookie: sessionid=abc;\n    ttwid=def\n", (f2_dir / "like.yaml").read_text(encoding="utf-8"))
             self.assertIn("  cookie: sessionid=abc;\n    ttwid=def\n", (f2_dir / "collection.yaml").read_text(encoding="utf-8"))
+
+    def test_cookie_import_preview_compares_without_values(self) -> None:
+        old_rule = integrated_server.SITE_RULES["x"]
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "x_cookies.txt"
+            output.write_text(
+                "# Netscape HTTP Cookie File\n"
+                ".x.com\tTRUE\t/\tTRUE\t1999999999\tauth_token\told\n"
+                ".x.com\tTRUE\t/\tTRUE\t1999999999\tct0\tsame\n",
+                encoding="utf-8",
+            )
+            integrated_server.SITE_RULES["x"] = dict(old_rule, output=output)
+            try:
+                preview = integrated_server.analyze_cookie_import(
+                    ".x.com\tTRUE\t/\tTRUE\t1999999999\tauth_token\tnew\n"
+                    ".x.com\tTRUE\t/\tTRUE\t1999999999\tct0\tsame\n"
+                    ".x.com\tTRUE\t/\tTRUE\t1999999999\ttwid\tadded\n"
+                )
+            finally:
+                integrated_server.SITE_RULES["x"] = old_rule
+            self.assertEqual(preview["x"]["incoming_count"], 3)
+            self.assertEqual(preview["x"]["existing_count"], 2)
+            self.assertEqual(preview["x"]["added_names"], ["twid"])
+            self.assertEqual(preview["x"]["changed_names"], ["auth_token"])
+
+    def test_cookie_import_respects_selected_targets(self) -> None:
+        old_x = integrated_server.SITE_RULES["x"]
+        old_xhs = integrated_server.SITE_RULES["xhs"]
+        with tempfile.TemporaryDirectory() as tmp:
+            x_output = Path(tmp) / "x_cookies.txt"
+            xhs_output = Path(tmp) / "xhs_cookie.txt"
+            integrated_server.SITE_RULES["x"] = dict(old_x, output=x_output)
+            integrated_server.SITE_RULES["xhs"] = dict(old_xhs, output=xhs_output)
+            try:
+                result = integrated_server.import_all_cookie(
+                    ".x.com\tTRUE\t/\tTRUE\t1999999999\tauth_token\tx-token\n"
+                    ".xiaohongshu.com\tTRUE\t/\tTRUE\t1999999999\ta1\txhs-token\n",
+                    targets=["x"],
+                )
+            finally:
+                integrated_server.SITE_RULES["x"] = old_x
+                integrated_server.SITE_RULES["xhs"] = old_xhs
+            self.assertIn("x", result)
+            self.assertNotIn("xhs", result)
+            self.assertTrue(x_output.exists())
+            self.assertFalse(xhs_output.exists())
 
 
 class DouyinCookieTests(unittest.TestCase):

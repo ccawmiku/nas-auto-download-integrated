@@ -21,6 +21,11 @@
   - 集成入口、Pixiv、X、抖音页面共用基础 CSS。
   - 统一按钮、状态标签、表单、卡片、进度、日志等基础控件样式。
   - Docker 集成镜像通过 `PYTHONPATH=/opt/nas-auto` 加载共享包。
+- 集成入口改为侧边栏控制台：
+  - 左侧切换总览、小红书、X、Pixiv、抖音。
+  - 服务页面通过现有代理在统一工作区中打开，不改变下载 worker 的业务逻辑。
+  - Cookie 导入区明确区分“上传 cookies.txt”和“粘贴 Cookie 内容”。
+  - Cookie 导入支持预览字段差异，并可多选导入小红书、X、抖音。
 - 抖音 worker 减少重复写任务 YAML：
   - 增加任务配置签名。
   - 只有 Cookie、任务、默认下载配置等发生变化时才重写 `like.yaml` / `collection.yaml`。

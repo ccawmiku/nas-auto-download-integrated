@@ -73,14 +73,17 @@ SERVICES = {
     "pixiv": {"name": "Pixiv", "port": 18083, "path": "/pixiv/", "config": "/config/pixiv/config.json"},
     "douyin": {"name": "抖音", "port": 18084, "path": "/douyin/", "config": "/config/douyin/config.json"},
 }
+COOKIE_IMPORT_KEYS = ("xhs", "x", "douyin")
 
 SITE_RULES = {
     "xhs": {
         "output": Path("/config/xhs/xhs_cookie.txt"),
+        "domains": {"xiaohongshu.com", ".xiaohongshu.com", "www.xiaohongshu.com", ".www.xiaohongshu.com"},
         "names": {"a1", "web_session", "webId", "gid", "webBuild", "unread", "xsecappid", "loadts", "acw_tc"},
     },
     "x": {
         "output": Path("/config/x/x_cookies.txt"),
+        "domains": {"x.com", ".x.com", "twitter.com", ".twitter.com"},
         "names": {
             "auth_token",
             "ct0",
@@ -597,24 +600,93 @@ def parse_netscape_cookies(text: str) -> list[dict[str, str]]:
     return rows
 
 
-def import_all_cookie(text: str) -> dict[str, Any]:
+def select_cookie_values(text: str, key: str) -> dict[str, str]:
+    rule = SITE_RULES[key]
     values = parse_cookie_header(text)
     rows = parse_netscape_cookies(text)
+    if key == "douyin":
+        if rows:
+            selected_pairs: list[tuple[str, str]] = []
+            domains = set(rule.get("domains") or [])
+            for row in rows:
+                domain = row["domain"].removeprefix("#HttpOnly_")
+                if domain in domains:
+                    selected_pairs.append((row["name"], row["value"]))
+            return dict(select_douyin_cookie_pairs(selected_pairs))
+        return dict(parse_cookie_pairs(extract_douyin_cookie_text(text)))
+    if rows and rule.get("domains"):
+        selected: dict[str, str] = {}
+        domains = set(rule.get("domains") or [])
+        names = set(rule.get("names") or [])
+        for row in rows:
+            domain = row["domain"].removeprefix("#HttpOnly_")
+            if domain in domains and row["name"] in names:
+                selected[row["name"]] = row["value"]
+        return selected
+    return {name: values[name] for name in sorted(rule["names"]) if name in values}
+
+
+def read_existing_cookie_values(key: str) -> dict[str, str]:
+    path = SITE_RULES[key]["output"]
+    if not path.exists() or not path.is_file():
+        return {}
+    try:
+        return select_cookie_values(path.read_text(encoding="utf-8-sig"), key)
+    except OSError:
+        return {}
+
+
+def compare_cookie_values(incoming: dict[str, str], existing: dict[str, str]) -> dict[str, Any]:
+    incoming_names = set(incoming)
+    existing_names = set(existing)
+    changed = sorted(name for name in incoming_names & existing_names if incoming[name] != existing[name])
+    same = sorted(name for name in incoming_names & existing_names if incoming[name] == existing[name])
+    added = sorted(incoming_names - existing_names)
+    removed = sorted(existing_names - incoming_names)
+    return {
+        "incoming_count": len(incoming),
+        "existing_count": len(existing),
+        "same_count": len(same),
+        "added_count": len(added),
+        "changed_count": len(changed),
+        "removed_count": len(removed),
+        "incoming_names": sorted(incoming),
+        "added_names": added,
+        "changed_names": changed,
+        "removed_names": removed,
+    }
+
+
+def analyze_cookie_import(text: str) -> dict[str, Any]:
     result: dict[str, Any] = {}
-    for key, rule in SITE_RULES.items():
-        if key == "douyin":
-            if rows:
-                selected_pairs: list[tuple[str, str]] = []
-                domains = set(rule.get("domains") or [])
-                for row in rows:
-                    domain = row["domain"].removeprefix("#HttpOnly_")
-                    if domain in domains:
-                        selected_pairs.append((row["name"], row["value"]))
-                selected = dict(select_douyin_cookie_pairs(selected_pairs))
-            else:
-                selected = dict(parse_cookie_pairs(extract_douyin_cookie_text(text)))
-        else:
-            selected = {name: values[name] for name in sorted(rule["names"]) if name in values}
+    for key in COOKIE_IMPORT_KEYS:
+        incoming = select_cookie_values(text, key)
+        existing = read_existing_cookie_values(key)
+        comparison = compare_cookie_values(incoming, existing)
+        comparison.update(
+            {
+                "key": key,
+                "name": SERVICES[key]["name"],
+                "output": str(SITE_RULES[key]["output"]),
+                "selected": bool(incoming),
+            }
+        )
+        result[key] = comparison
+    return result
+
+
+def normalize_import_targets(targets: list[str] | tuple[str, ...] | set[str] | None) -> list[str]:
+    if targets is None:
+        return list(COOKIE_IMPORT_KEYS)
+    selected = [key for key in COOKIE_IMPORT_KEYS if key in set(targets)]
+    return selected
+
+
+def import_all_cookie(text: str, targets: list[str] | tuple[str, ...] | set[str] | None = None) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key in normalize_import_targets(targets):
+        rule = SITE_RULES[key]
+        selected = select_cookie_values(text, key)
         if selected:
             output: Path = rule["output"]
             output.parent.mkdir(parents=True, exist_ok=True)
@@ -634,19 +706,25 @@ def import_all_cookie(text: str) -> dict[str, Any]:
     return result
 
 
-def read_import_cookie_payload(handler: BaseHTTPRequestHandler, length: int) -> str:
+def read_import_cookie_form(handler: BaseHTTPRequestHandler, length: int) -> dict[str, Any]:
     body = handler.rfile.read(length)
     content_type = handler.headers.get("Content-Type", "")
     if "multipart/form-data" not in content_type:
         form = parse_qs(body.decode("utf-8", errors="replace"))
-        return (form.get("cookie_text") or [""])[0]
+        return {
+            "text": (form.get("cookie_text") or [""])[0],
+            "targets": [key for key in form.get("targets", []) if key in COOKIE_IMPORT_KEYS],
+            "action": (form.get("action") or [""])[0],
+        }
 
     match = re.search(r"boundary=(?:\"([^\"]+)\"|([^;]+))", content_type)
     if not match:
-        return ""
+        return {"text": "", "targets": [], "action": ""}
     boundary = (match.group(1) or match.group(2)).encode("utf-8")
     marker = b"--" + boundary
     values: list[str] = []
+    targets: list[str] = []
+    action = ""
     for part in body.split(marker):
         if b"\r\n\r\n" not in part:
             continue
@@ -657,7 +735,17 @@ def read_import_cookie_payload(handler: BaseHTTPRequestHandler, length: int) -> 
             decoded = value.decode("utf-8-sig", errors="replace").strip()
             if decoded:
                 values.append(decoded)
-    return "\n".join(values)
+        elif 'name="targets"' in headers:
+            target = value.decode("utf-8", errors="replace").strip()
+            if target in COOKIE_IMPORT_KEYS:
+                targets.append(target)
+        elif 'name="action"' in headers:
+            action = value.decode("utf-8", errors="replace").strip()
+    return {"text": "\n".join(values), "targets": targets, "action": action}
+
+
+def read_import_cookie_payload(handler: BaseHTTPRequestHandler, length: int) -> str:
+    return str(read_import_cookie_form(handler, length).get("text") or "")
 
 
 def service_status() -> dict[str, Any]:
@@ -682,33 +770,230 @@ def service_status() -> dict[str, Any]:
 
 
 def page(message: str = "") -> bytes:
-    cards = ""
-    for svc in SERVICES.values():
+    nav_items = ""
+    service_cards = ""
+    ready_count = 0
+    for key, svc in SERVICES.items():
         ready = is_port_open("127.0.0.1", int(svc["port"]))
+        if ready:
+            ready_count += 1
         cls = "ready" if ready else "starting"
         label = "已就绪" if ready else "启动中"
-        cards += (
-            f'<a class="card {cls}" href="{svc["path"]}"><strong>{html.escape(svc["name"])}</strong>'
-            f'<span>{html.escape(svc["path"])}</span><em>{label}</em></a>'
+        nav_items += (
+            f'<a class="nav-item {cls}" href="{svc["path"]}" data-service="{key}">'
+            f'<span>{html.escape(svc["name"])}</span><em data-status="{key}">{label}</em></a>'
+        )
+        service_cards += (
+            f'<a class="card {cls}" href="{svc["path"]}" data-open-service="{key}" data-service-card="{key}">'
+            f'<strong>{html.escape(svc["name"])}</strong><span>{html.escape(svc["path"])}</span><em>{label}</em></a>'
         )
     lock = "占用中，其他浏览器任务会等待" if Path(BROWSER_LOCK_PATH).exists() else "空闲"
+    shell_css = app_css(
+        """
+body{background:#f4f6f8}
+.app-shell{min-height:100vh;display:grid;grid-template-columns:260px minmax(0,1fr)}
+.shell-sidebar{height:100vh;position:sticky;top:0;background:#171b24;color:#f8fafc;padding:18px;display:flex;flex-direction:column;gap:18px}
+.brand{display:grid;gap:3px;padding:4px 2px 10px}
+.brand strong{font-size:20px}.brand span{color:#a8b3c7;font-size:12px}
+.nav-group{display:grid;gap:8px}.nav-title{color:#8792a6;font-size:12px;padding:0 10px}
+.nav-item{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;background:transparent;color:#e5e7eb;text-decoration:none;text-align:left;font:inherit;border:1px solid transparent;border-radius:8px;padding:10px;cursor:pointer}
+.nav-item:hover,.nav-item.active{background:#222838;border-color:#323b52}
+.nav-item em{font-style:normal;color:#a8b3c7;font-size:12px}.nav-item.ready em{color:#86efac}.nav-item.starting em{color:#fbbf24}
+.workspace{min-width:0}.topbar{background:#fff;color:var(--text);border-bottom:1px solid var(--line);min-height:64px}
+.topbar .status{margin-left:auto}.shell-main{max-width:none;padding:24px;align-content:start}
+.hero-panel{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;align-items:end;background:#fff;border:1px solid var(--line);border-radius:8px;padding:20px}
+.hero-panel h1{font-size:24px}.hero-panel p{margin:8px 0 0}.summary-strip{display:flex;gap:10px;flex-wrap:wrap}
+.summary-card{min-width:128px;border:1px solid var(--line);border-radius:8px;background:var(--panel-soft);padding:10px}
+.summary-card span{display:block;color:var(--muted);font-size:12px}.summary-card strong{display:block;margin-top:4px;font-size:18px}
+.dashboard-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(320px,.65fr);gap:16px}
+.service-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+.import-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,.55fr);gap:14px}
+.target-grid{display:grid;gap:10px}.target-check{display:flex;align-items:center;gap:8px;margin:0;border:1px solid var(--line);border-radius:8px;padding:10px;background:var(--panel-soft);color:var(--text)}
+.target-check input{width:auto}.target-check span{display:grid;gap:2px}.target-check small{color:var(--muted)}
+.preview-grid{display:grid;gap:10px}.preview-card{border:1px solid var(--line);border-radius:8px;padding:12px;background:var(--panel-soft)}
+.preview-card header{all:unset;display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
+.preview-card h3{margin:0;font-size:15px}.preview-card dl{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:0}
+.preview-card dt{color:var(--muted);font-size:12px}.preview-card dd{margin:2px 0 0;font-weight:700}.preview-names{margin-top:8px;color:var(--muted);font-size:12px;line-height:1.55}
+.service-pane{display:none;height:calc(100vh - 112px);min-height:640px;padding:0;overflow:hidden}.service-pane.active{display:block}
+.service-frame{width:100%;height:100%;border:0;background:#fff}
+.dashboard-view.hidden{display:none}
+pre{max-height:420px}
+@media(max-width:980px){.app-shell{grid-template-columns:1fr}.shell-sidebar{height:auto;position:static}.dashboard-grid,.import-layout{grid-template-columns:1fr}.shell-main{padding:14px}.service-pane{height:72vh;min-height:520px}}
+"""
+    )
+    script = """
+const $ = (id) => document.getElementById(id);
+const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+const form = $("cookieImportForm");
+const dashboardView = $("dashboardView");
+const servicePane = $("servicePane");
+const serviceFrame = $("serviceFrame");
+
+function showDashboard() {
+  dashboardView.classList.remove("hidden");
+  servicePane.classList.remove("active");
+  document.querySelectorAll(".nav-item").forEach((item) => item.classList.remove("active"));
+  $("dashboardNav").classList.add("active");
+}
+
+function openService(url, item) {
+  dashboardView.classList.add("hidden");
+  servicePane.classList.add("active");
+  serviceFrame.src = url;
+  document.querySelectorAll(".nav-item").forEach((nav) => nav.classList.remove("active"));
+  item.classList.add("active");
+}
+
+document.querySelectorAll("[data-service]").forEach((item) => {
+  item.addEventListener("click", (event) => {
+    event.preventDefault();
+    openService(item.getAttribute("href"), item);
+  });
+});
+document.querySelectorAll("[data-open-service]").forEach((item) => {
+  item.addEventListener("click", (event) => {
+    event.preventDefault();
+    openService(item.getAttribute("href"), document.querySelector(`.nav-item[data-service="${item.dataset.openService}"]`) || item);
+  });
+});
+$("dashboardNav").addEventListener("click", showDashboard);
+
+function compactNames(names) {
+  if (!names || !names.length) return "无";
+  const visible = names.slice(0, 12).map(esc).join(", ");
+  return names.length > 12 ? `${visible} ...` : visible;
+}
+
+function renderPreview(data) {
+  const box = $("cookiePreview");
+  const items = Object.values(data.targets || {});
+  if (!items.length) {
+    box.innerHTML = '<p class="muted">还没有可预览的数据。</p>';
+    return;
+  }
+  box.innerHTML = items.map((item) => `
+    <div class="preview-card">
+      <header><h3>${esc(item.name)}</h3><span class="pill ${item.incoming_count ? "ok" : "warn"}">${item.incoming_count ? "可导入" : "未识别"}</span></header>
+      <dl>
+        <div><dt>导入文件</dt><dd>${item.incoming_count}</dd></div>
+        <div><dt>现有文件</dt><dd>${item.existing_count}</dd></div>
+        <div><dt>新增</dt><dd>${item.added_count}</dd></div>
+        <div><dt>变化</dt><dd>${item.changed_count}</dd></div>
+      </dl>
+      <div class="preview-names">导入字段：${compactNames(item.incoming_names)}</div>
+      <div class="preview-names">变化字段：${compactNames(item.changed_names)}</div>
+      <div class="preview-names">现有但本次没有：${compactNames(item.removed_names)}</div>
+    </div>
+  `).join("");
+}
+
+$("previewCookie").addEventListener("click", async () => {
+  const fd = new FormData(form);
+  const button = $("previewCookie");
+  button.disabled = true;
+  button.textContent = "预览中...";
+  try {
+    const resp = await fetch("/api/cookie-preview", {method:"POST", body:fd});
+    renderPreview(await resp.json());
+  } catch (error) {
+    $("cookiePreview").innerHTML = `<p class="muted">预览失败：${esc(error)}</p>`;
+  } finally {
+    button.disabled = false;
+    button.textContent = "预览差异";
+  }
+});
+
+async function refreshStatus() {
+  try {
+    const resp = await fetch("/api/status", {cache:"no-store"});
+    const data = await resp.json();
+    $("versionText").textContent = data.version || "";
+    $("lockText").textContent = data.browser_lock ? "占用中" : "空闲";
+    $("logBox").textContent = (data.logs || []).join("\\n");
+    let ready = 0;
+    for (const svc of data.services || []) {
+      if (svc.ready) ready += 1;
+      const label = svc.ready ? "已就绪" : "启动中";
+      const nav = document.querySelector(`[data-status="${svc.key}"]`);
+      const card = document.querySelector(`[data-service-card="${svc.key}"]`);
+      if (nav) nav.textContent = label;
+      const navItem = document.querySelector(`.nav-item[data-service="${svc.key}"]`);
+      if (navItem) {
+        navItem.classList.toggle("ready", !!svc.ready);
+        navItem.classList.toggle("starting", !svc.ready);
+      }
+      if (card) {
+        card.classList.toggle("ready", !!svc.ready);
+        card.classList.toggle("starting", !svc.ready);
+        const em = card.querySelector("em");
+        if (em) em.textContent = label;
+      }
+    }
+    $("readyText").textContent = `${ready}/${(data.services || []).length}`;
+  } catch (_error) {}
+}
+refreshStatus();
+setInterval(refreshStatus, 3000);
+"""
     body = f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>NAS Auto Download</title>
 <style>
-{app_css("main{max-width:1120px}.grid{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}textarea{min-height:140px}pre{max-height:360px}")}
+{shell_css}
 </style></head><body>
-<header><h1>NAS Auto Download</h1><div><span class="pill">小红书 / X / Pixiv / 抖音</span> <span class="pill">{html.escape(APP_VERSION)}</span></div></header>
-<main>
-{f'<section class="ok">{html.escape(message)}</section>' if message else ''}
-<section><h2>服务入口</h2><div class="grid">{cards}</div><p class="muted">无头浏览器锁：{lock}</p></section>
-<section><h2>一次性导入 Cookie</h2><p class="muted">粘贴或上传浏览器插件导出的全站 Cookie。服务器只读取内容并拆出小红书/X/抖音所需字段，不保存原始上传文件。Pixiv 请进入 Pixiv 页面生成登录链接并换取 Token。</p>
-<form method="post" action="/import-cookies" enctype="multipart/form-data">
-<label class="muted">上传 cookies.txt</label><input type="file" name="cookie_file" accept=".txt,.cookies,text/plain">
-<label class="muted">或直接粘贴 Cookie 内容</label><textarea name="cookie_text" placeholder="name=value; name2=value2; ..."></textarea>
-<p><button type="submit">导入小红书、X 和抖音 Cookie</button></p></form></section>
-<section><h2>最近日志</h2><pre>{html.escape(chr(10).join(log_lines[-80:]))}</pre></section>
-</main></body></html>"""
+<div class="app-shell">
+<aside class="shell-sidebar">
+  <div class="brand"><strong>NAS Auto</strong><span id="versionText">{html.escape(APP_VERSION)}</span></div>
+  <nav class="nav-group">
+    <div class="nav-title">工作区</div>
+    <button class="nav-item active" id="dashboardNav" type="button"><span>总览与导入</span><em>当前</em></button>
+    {nav_items}
+  </nav>
+</aside>
+<div class="workspace">
+  <header class="topbar"><h1>NAS Auto Download</h1><div class="status"><span class="pill">服务 <span id="readyText">{ready_count}/{len(SERVICES)}</span></span><span class="pill">浏览器锁 <span id="lockText">{lock}</span></span></div></header>
+  <main class="shell-main">
+    <div class="dashboard-view" id="dashboardView">
+      {f'<section class="ok">{html.escape(message)}</section>' if message else ''}
+      <section class="hero-panel">
+        <div><h1>统一下载控制台</h1><p class="muted">侧边栏切换小红书、X、Pixiv、抖音；Cookie 导入先预览差异，再按目标写入。</p></div>
+        <div class="summary-strip">
+          <div class="summary-card"><span>服务就绪</span><strong>{ready_count}/{len(SERVICES)}</strong></div>
+          <div class="summary-card"><span>浏览器锁</span><strong>{lock}</strong></div>
+          <div class="summary-card"><span>版本</span><strong>{html.escape(APP_VERSION)}</strong></div>
+        </div>
+      </section>
+      <div class="dashboard-grid">
+        <section><h2>服务入口</h2><div class="service-grid">{service_cards}</div></section>
+        <section><h2>最近日志</h2><pre id="logBox">{html.escape(chr(10).join(log_lines[-80:]))}</pre></section>
+      </div>
+      <section><h2>Cookie 导入</h2>
+        <p class="muted">先上传浏览器导出的 cookies.txt，或粘贴单行 Cookie Header / 抖音 app.yaml 的 <code>cookie:</code> 段。预览只比较字段名和数量，不显示 Cookie 明文；点击导入后只写入勾选目标。</p>
+        <form id="cookieImportForm" method="post" action="/import-cookies" enctype="multipart/form-data">
+          <div class="import-layout">
+            <div>
+              <label>上传 cookies.txt（浏览器导出的 Netscape 格式）</label>
+              <input type="file" name="cookie_file" accept=".txt,.cookies,text/plain">
+              <label>粘贴 Cookie 内容（Cookie Header 或抖音 app.yaml 的 cookie 段）</label>
+              <textarea name="cookie_text" placeholder="cookie: sessionid=...; ttwid=..."></textarea>
+            </div>
+            <div class="target-grid">
+              <label class="target-check"><input type="checkbox" name="targets" value="xhs" checked><span>小红书<small>/config/xhs/xhs_cookie.txt</small></span></label>
+              <label class="target-check"><input type="checkbox" name="targets" value="x" checked><span>X<small>/config/x/x_cookies.txt</small></span></label>
+              <label class="target-check"><input type="checkbox" name="targets" value="douyin" checked><span>抖音<small>/config/douyin/douyin_cookie.txt，并同步 f2 YAML</small></span></label>
+            </div>
+          </div>
+          <div class="actions"><button class="secondary" id="previewCookie" type="button">预览差异</button><button name="action" value="import" type="submit">导入勾选项目</button></div>
+        </form>
+        <div class="preview-grid" id="cookiePreview"><p class="muted">预览后会显示每个目标的导入字段数、现有字段数、新增字段和变化字段。</p></div>
+      </section>
+    </div>
+    <section class="service-pane" id="servicePane"><iframe class="service-frame" id="serviceFrame" name="serviceFrame" title="服务页面"></iframe></section>
+  </main>
+</div>
+</div>
+<script>{script}</script>
+</body></html>"""
     return body.encode("utf-8")
 
 
@@ -804,12 +1089,31 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         split = urlsplit(self.path)
+        if split.path == "/api/cookie-preview":
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            form = read_import_cookie_form(self, length)
+            payload = {
+                "targets": analyze_cookie_import(str(form.get("text") or "")),
+                "selected": normalize_import_targets(form.get("targets")),
+            }
+            data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if split.path == "/import-cookies":
             length = int(self.headers.get("Content-Length", "0") or 0)
-            result = import_all_cookie(read_import_cookie_payload(self, length))
-            message = "导入完成：" + "；".join(
-                f"{SERVICES[key]['name']} {value['count']} 项 -> {value['output']}" for key, value in result.items()
-            )
+            form = read_import_cookie_form(self, length)
+            targets = normalize_import_targets(form.get("targets"))
+            if not targets:
+                message = "未选择要导入的项目，请至少勾选小红书、X 或抖音中的一个。"
+            else:
+                result = import_all_cookie(str(form.get("text") or ""), targets)
+                message = "导入完成：" + "；".join(
+                    f"{SERVICES[key]['name']} {value['count']} 项 -> {value['output']}" for key, value in result.items()
+                )
             data = page(message)
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
