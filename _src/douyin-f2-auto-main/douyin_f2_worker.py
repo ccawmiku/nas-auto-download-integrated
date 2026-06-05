@@ -72,6 +72,73 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 DOUYIN_COOKIE_DOMAINS = {"douyin.com", ".douyin.com", "www.douyin.com", ".www.douyin.com"}
+DOUYIN_REFERENCE_COOKIE_ORDER = (
+    "UIFID_TEMP",
+    "UIFID",
+    "my_rd",
+    "volume_info",
+    "WallpaperGuide",
+    "FOLLOW_NUMBER_YELLOW_POINT_INFO",
+    "_bd_ticket_crypt_doamin",
+    "record_force_login",
+    "stream_player_status_params",
+    "passport_mfa_token",
+    "d_ticket",
+    "PhoneResumeUidCacheV1",
+    "strategyABtestKey",
+    "passport_csrf_token",
+    "passport_csrf_token_default",
+    "sdk_source_info",
+    "bit_env",
+    "gulu_source_res",
+    "passport_auth_mix_state",
+    "download_guide",
+    "passport_assist_user",
+    "n_mh",
+    "sid_guard",
+    "uid_tt",
+    "uid_tt_ss",
+    "sid_tt",
+    "sessionid",
+    "sessionid_ss",
+    "session_tlb_tag",
+    "is_staff_user",
+    "has_biz_token",
+    "sid_ucp_v1",
+    "ssid_ucp_v1",
+    "_bd_ticket_crypt_cookie",
+    "__security_mc_1_s_sdk_sign_data_key_web_protect",
+    "__security_mc_1_s_sdk_cert_key",
+    "__security_mc_1_s_sdk_crypt_sdk",
+    "__security_server_data_status",
+    "login_time",
+    "publish_badge_show_info",
+    "DiscoverFeedExposedAd",
+    "ttwid",
+    "enter_pc_once",
+    "hevc_supported",
+    "home_can_add_dy_2_desktop",
+    "stream_recommend_feed_params",
+    "SelfTabRedDotControl",
+    "FOLLOW_LIVE_POINT_INFO",
+    "is_dash_user",
+    "bd_ticket_guard_client_data",
+    "bd_ticket_guard_client_web_domain",
+    "odin_tt",
+    "bd_ticket_guard_client_data_v2",
+    "IsDouyinActive",
+    "xgplayer_user_id",
+    "fpk1",
+    "fpk2",
+    "__ac_nonce",
+    "__ac_signature",
+    "s_v_web_id",
+    "dy_swidth",
+    "dy_sheight",
+    "gd_random",
+    "bd_ticket_guard_web_domain",
+)
+DOUYIN_REFERENCE_COOKIE_NAMES = set(DOUYIN_REFERENCE_COOKIE_ORDER)
 COOKIE_LINE_RE = re.compile(r"^\s*cookie\s*:\s*", re.IGNORECASE)
 YAML_KEY_RE = re.compile(r"^\s*[A-Za-z0-9_-]+\s*:\s*")
 URL_QUERY_RE = re.compile(r"(https?://[^\s?]+)\?[^\s]+")
@@ -201,6 +268,21 @@ def dedupe_cookie_pairs(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
     return deduped
 
 
+def is_ascii_cookie_pair(name: str, value: str) -> bool:
+    return name.isascii() and value.isascii()
+
+
+def select_douyin_cookie_pairs(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    values: dict[str, str] = {}
+    for name, value in dedupe_cookie_pairs(pairs):
+        if name not in DOUYIN_REFERENCE_COOKIE_NAMES:
+            continue
+        if not value or not is_ascii_cookie_pair(name, value):
+            continue
+        values[name] = value
+    return [(name, values[name]) for name in DOUYIN_REFERENCE_COOKIE_ORDER if name in values]
+
+
 def extract_cookie_block(text: str) -> str:
     lines = str(text or "").replace("\r", "").splitlines()
     if not lines:
@@ -239,9 +321,9 @@ def normalize_cookie_text(text: str) -> str:
             if name:
                 rows.append((name, value))
     if rows:
-        rows = dedupe_cookie_pairs(rows)
+        rows = select_douyin_cookie_pairs(rows)
         return "; ".join(f"{name}={value}" for name, value in rows)
-    pairs = dedupe_cookie_pairs(parse_cookie_pairs(extract_cookie_block(text)))
+    pairs = select_douyin_cookie_pairs(parse_cookie_pairs(extract_cookie_block(text)))
     return "; ".join(f"{name}={value}" for name, value in pairs)
 
 
@@ -651,7 +733,7 @@ textarea{{min-height:120px;resize:vertical}}
 <div>长度<br><strong id="cookieLength">{html.escape(str(cookie_info["length"]))}</strong></div>
 <div>关键字段<br><strong id="cookieRequired">{html.escape("完整" if not cookie_info["missing_required"] and cookie_info["present"] else ", ".join(cookie_info["missing_required"]) or "-")}</strong></div>
 </div>
-<p class="muted">支持直接粘贴 `app.yaml` 里的 `cookie:` 段或单行 Cookie header。保存时会保留全部抖音域 Cookie、自动去重，并以 UTF-8 写入专用 Cookie 文件；页面和日志都不会显示明文。</p>
+<p class="muted">支持直接粘贴 `app.yaml` 里的 `cookie:` 段或单行 Cookie header。保存时会按本地参考 `app.yaml` 的字段和顺序拼接，其他字段会丢弃，并过滤非 ASCII 值；页面和日志都不会显示明文。</p>
 <form method="post" action="/cookie">
 <textarea name="cookie_text" placeholder="cookie: sessionid=...; ttwid=..."></textarea>
 <div class="actions"><button type="submit">保存抖音 Cookie</button></div>
