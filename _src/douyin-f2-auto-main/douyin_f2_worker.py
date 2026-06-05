@@ -267,7 +267,7 @@ def read_cookie(path_value: str) -> str:
     path = Path(str(path_value or ""))
     if not path.exists() or not path.is_file():
         return ""
-    return path.read_text(encoding="utf-8-sig").strip()
+    return normalize_cookie_text(path.read_text(encoding="utf-8-sig"))
 
 
 def parse_cookie_pairs(cookie_text: str) -> list[tuple[str, str]]:
@@ -359,15 +359,19 @@ def normalize_cookie_text(text: str) -> str:
     return "; ".join(f"{name}={value}" for name, value in pairs)
 
 
-def render_douyin_cookie_yaml_lines(cookie_text: str) -> list[str]:
+def render_cookie_block_lines(cookie_text: str, base_indent: str = "") -> list[str]:
     pairs = parse_cookie_pairs(cookie_text)
     if not pairs:
-        return ["  cookie:"]
+        return [f"{base_indent}cookie:"]
     lines: list[str] = []
     for index, (name, value) in enumerate(pairs):
-        prefix = "  cookie: " if index == 0 else "    "
+        prefix = f"{base_indent}cookie: " if index == 0 else f"{base_indent}  "
         lines.append(f"{prefix}{name}={value};")
     return lines
+
+
+def render_cookie_block(cookie_text: str, base_indent: str = "") -> str:
+    return "\n".join(render_cookie_block_lines(cookie_text, base_indent)) + "\n"
 
 
 def render_douyin_job_yaml(douyin: dict[str, Any]) -> str:
@@ -380,7 +384,7 @@ def render_douyin_job_yaml(douyin: dict[str, Any]) -> str:
     replaced = False
     for line in rendered.splitlines():
         if placeholder_pattern.match(line):
-            output_lines.extend(render_douyin_cookie_yaml_lines(str(douyin.get("cookie") or "")))
+            output_lines.extend(render_cookie_block_lines(str(douyin.get("cookie") or ""), "  "))
             replaced = True
             continue
         output_lines.append(line)
@@ -556,7 +560,7 @@ class App:
             raise ValueError("未识别到可保存的抖音 Cookie")
         output = Path(str(self.config.get("cookie_file") or ""))
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(normalized + "\n", encoding="utf-8")
+        output.write_text(render_cookie_block(normalized), encoding="utf-8")
         summary_text = cookie_summary_text(normalized)
         self.log.write(f"已更新抖音 Cookie：{summary_text}")
         self.set_notice(f"抖音 Cookie 已保存：{summary_text}")

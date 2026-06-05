@@ -22,7 +22,7 @@ from urllib.parse import parse_qs, urlsplit
 PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
 BROWSER_LOCK_PATH = os.environ.get("BROWSER_LOCK_PATH", "/tmp/nas-auto-browser.lock")
-APP_VERSION = os.environ.get("APP_VERSION", "v1.3.3")
+APP_VERSION = os.environ.get("APP_VERSION", "v1.3.4")
 
 SERVICES = {
     "xhs": {"name": "小红书", "port": 18081, "path": "/xhs/", "config": "/config/xhs/config.json"},
@@ -404,6 +404,21 @@ def extract_douyin_cookie_text(text: str) -> str:
     return "; ".join(f"{name}={value}" for name, value in pairs)
 
 
+def render_douyin_cookie_block_lines(cookie_text: str, base_indent: str = "") -> list[str]:
+    pairs = parse_cookie_pairs(cookie_text)
+    if not pairs:
+        return [f"{base_indent}cookie:"]
+    lines: list[str] = []
+    for index, (name, value) in enumerate(pairs):
+        prefix = f"{base_indent}cookie: " if index == 0 else f"{base_indent}  "
+        lines.append(f"{prefix}{name}={value};")
+    return lines
+
+
+def render_douyin_cookie_block(cookie_text: str, base_indent: str = "") -> str:
+    return "\n".join(render_douyin_cookie_block_lines(cookie_text, base_indent)) + "\n"
+
+
 def parse_netscape_cookies(text: str) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for line in text.splitlines():
@@ -456,7 +471,10 @@ def import_all_cookie(text: str) -> dict[str, Any]:
                     lines.append(f".x.com\tTRUE\t/\tTRUE\t{expires}\t{name}\t{value}")
                 output.write_text("\n".join(lines) + "\n", encoding="utf-8")
             elif key == "douyin":
-                output.write_text("; ".join(f"{name}={value}" for name, value in selected.items()) + "\n", encoding="utf-8")
+                output.write_text(
+                    render_douyin_cookie_block("; ".join(f"{name}={value}" for name, value in selected.items())),
+                    encoding="utf-8",
+                )
             else:
                 output.write_text("; ".join(f"{name}={value}" for name, value in selected.items()) + "\n", encoding="utf-8")
         result[key] = {"count": len(selected), "output": str(rule["output"]), "names": sorted(selected)}

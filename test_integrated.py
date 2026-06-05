@@ -19,6 +19,7 @@ from douyin_f2_worker import (
     build_f2_runtime_conf,
     cookie_summary,
     normalize_cookie_text,
+    render_cookie_block,
     render_douyin_job_yaml,
 )
 from pixiv_auto_worker import classify_error, safe_extract_zip
@@ -27,7 +28,7 @@ from pixiv_auto_worker import classify_error, safe_extract_zip
 class IntegratedPageTests(unittest.TestCase):
     def test_home_page_includes_version_and_service_cards(self) -> None:
         body = integrated_server.page().decode("utf-8")
-        self.assertIn("v1.3.3", body)
+        self.assertIn("v1.3.4", body)
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)
@@ -47,7 +48,7 @@ class IntegratedPageTests(unittest.TestCase):
             finally:
                 integrated_server.SITE_RULES["douyin"] = old_rule
             self.assertEqual(result["douyin"]["count"], 2)
-            self.assertEqual(output.read_text(encoding="utf-8").strip(), "sessionid=def; ttwid=abc")
+            self.assertEqual(output.read_text(encoding="utf-8"), "cookie: sessionid=def;\n  ttwid=abc;\n")
 
     def test_imports_douyin_cookie_from_app_yaml_segment(self) -> None:
         old_rule = integrated_server.SITE_RULES["douyin"]
@@ -65,7 +66,7 @@ class IntegratedPageTests(unittest.TestCase):
             finally:
                 integrated_server.SITE_RULES["douyin"] = old_rule
             self.assertEqual(result["douyin"]["count"], 2)
-            self.assertEqual(output.read_text(encoding="utf-8").strip(), "sessionid=abc; ttwid=def")
+            self.assertEqual(output.read_text(encoding="utf-8"), "cookie: sessionid=abc;\n  ttwid=def;\n")
 
 
 class DouyinCookieTests(unittest.TestCase):
@@ -98,6 +99,11 @@ class DouyinCookieTests(unittest.TestCase):
         self.assertEqual(summary["status"], "正常")
         self.assertEqual(summary["risk"], "正常")
         self.assertEqual(summary["missing_reference"], [])
+
+    def test_renders_saved_cookie_block_with_reference_line_breaks(self) -> None:
+        rendered = render_cookie_block("sessionid=abc; ttwid=def")
+        self.assertEqual(rendered, "cookie: sessionid=abc;\n  ttwid=def;\n")
+        self.assertEqual(normalize_cookie_text(rendered), "sessionid=abc; ttwid=def")
 
     def test_renders_job_yaml_with_reference_cookie_line_breaks(self) -> None:
         rendered = render_douyin_job_yaml(
