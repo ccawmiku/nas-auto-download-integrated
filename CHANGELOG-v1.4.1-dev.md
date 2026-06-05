@@ -1,13 +1,13 @@
-# NAS Auto Download Integrated v1.4.0-dev
+# NAS Auto Download Integrated v1.4.1-dev
 
 ## 目标
 
-`v1.4.0-dev` 是 `v1.3.6` 之后的开发版，先做低风险的结构和界面收敛，不改动抖音 f2 Cookie 的核心格式规则。
+`v1.4.1-dev` 是 `v1.3.6` 之后的开发版，继续做低风险的结构和界面收敛，不改动抖音 f2 Cookie 的核心格式规则。
 
 ## 已调整
 
 - `main` 已合入 `v1.3.6`。
-- `dev` 版本号更新为 `v1.4.0-dev`，同步更新：
+- `dev` 版本号更新为 `v1.4.1-dev`，同步更新：
   - `VERSION`
   - `_integrated/Dockerfile`
   - `_integrated/integrated_server.py`

@@ -33,7 +33,7 @@ except ModuleNotFoundError:
 PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
 BROWSER_LOCK_PATH = os.environ.get("BROWSER_LOCK_PATH", "/tmp/nas-auto-browser.lock")
-APP_VERSION = os.environ.get("APP_VERSION", "v1.4.0-dev")
+APP_VERSION = os.environ.get("APP_VERSION", "v1.4.1-dev")
 DOUYIN_CONFIG_PATH = Path(os.environ.get("DOUYIN_CONFIG_PATH", "/config/douyin/config.json"))
 DOUYIN_COOKIE_YAML_PLACEHOLDER = "__DOUYIN_COOKIE_PLACEHOLDER__"
 DEFAULT_DOUYIN_CONFIG: dict[str, Any] = {

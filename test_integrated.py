@@ -28,7 +28,7 @@ from pixiv_auto_worker import classify_error, safe_extract_zip
 class IntegratedPageTests(unittest.TestCase):
     def test_home_page_includes_version_and_service_cards(self) -> None:
         body = integrated_server.page().decode("utf-8")
-        self.assertIn("v1.4.0-dev", body)
+        self.assertIn("v1.4.1-dev", body)
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)
