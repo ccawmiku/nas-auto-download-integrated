@@ -28,16 +28,24 @@ from pixiv_auto_worker import classify_error, safe_extract_zip
 class IntegratedPageTests(unittest.TestCase):
     def test_home_page_includes_version_and_service_cards(self) -> None:
         body = integrated_server.page().decode("utf-8")
-        self.assertIn("v1.3.4", body)
+        self.assertIn("v1.3.5", body)
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)
 
     def test_imports_douyin_cookie_from_netscape_export(self) -> None:
         old_rule = integrated_server.SITE_RULES["douyin"]
+        old_config_path = integrated_server.DOUYIN_CONFIG_PATH
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "douyin_cookie.txt"
+            config_path = Path(tmp) / "config.json"
+            f2_dir = Path(tmp) / "f2"
+            config_path.write_text(
+                '{"f2_config_dir": "%s"}' % str(f2_dir).replace("\\", "\\\\"),
+                encoding="utf-8",
+            )
             integrated_server.SITE_RULES["douyin"] = dict(old_rule, output=output)
+            integrated_server.DOUYIN_CONFIG_PATH = config_path
             try:
                 result = integrated_server.import_all_cookie(
                     ".douyin.com\tTRUE\t/\tTRUE\t1999999999\tttwid\tabc\n"
@@ -47,14 +55,25 @@ class IntegratedPageTests(unittest.TestCase):
                 )
             finally:
                 integrated_server.SITE_RULES["douyin"] = old_rule
+                integrated_server.DOUYIN_CONFIG_PATH = old_config_path
             self.assertEqual(result["douyin"]["count"], 2)
             self.assertEqual(output.read_text(encoding="utf-8"), "cookie: sessionid=def;\n  ttwid=abc;\n")
+            self.assertIn("  cookie: sessionid=def;\n    ttwid=abc;\n", (f2_dir / "like.yaml").read_text(encoding="utf-8"))
+            self.assertIn("  cookie: sessionid=def;\n    ttwid=abc;\n", (f2_dir / "collection.yaml").read_text(encoding="utf-8"))
 
     def test_imports_douyin_cookie_from_app_yaml_segment(self) -> None:
         old_rule = integrated_server.SITE_RULES["douyin"]
+        old_config_path = integrated_server.DOUYIN_CONFIG_PATH
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "douyin_cookie.txt"
+            config_path = Path(tmp) / "config.json"
+            f2_dir = Path(tmp) / "f2"
+            config_path.write_text(
+                '{"f2_config_dir": "%s"}' % str(f2_dir).replace("\\", "\\\\"),
+                encoding="utf-8",
+            )
             integrated_server.SITE_RULES["douyin"] = dict(old_rule, output=output)
+            integrated_server.DOUYIN_CONFIG_PATH = config_path
             try:
                 result = integrated_server.import_all_cookie(
                     "cookie: sessionid=abc;\n"
@@ -65,8 +84,11 @@ class IntegratedPageTests(unittest.TestCase):
                 )
             finally:
                 integrated_server.SITE_RULES["douyin"] = old_rule
+                integrated_server.DOUYIN_CONFIG_PATH = old_config_path
             self.assertEqual(result["douyin"]["count"], 2)
             self.assertEqual(output.read_text(encoding="utf-8"), "cookie: sessionid=abc;\n  ttwid=def;\n")
+            self.assertIn("  cookie: sessionid=abc;\n    ttwid=def;\n", (f2_dir / "like.yaml").read_text(encoding="utf-8"))
+            self.assertIn("  cookie: sessionid=abc;\n    ttwid=def;\n", (f2_dir / "collection.yaml").read_text(encoding="utf-8"))
 
 
 class DouyinCookieTests(unittest.TestCase):

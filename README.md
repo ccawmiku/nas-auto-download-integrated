@@ -25,7 +25,7 @@ docker compose up -d
 默认镜像：
 
 ```text
-ghcr.io/ccawmiku/nas-auto-download-integrated:v1.3.4
+ghcr.io/ccawmiku/nas-auto-download-integrated:v1.3.5
 ```
 
 每次发布都会同步更新 `docker-compose.yml` 里的镜像版本。NAS 端更新时执行 `docker compose pull && docker compose up -d`，避免复用旧镜像 tag。
@@ -87,7 +87,7 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.3.4
 /volume2/docker/nas-auto-download-integrated/douyin/f2/database/douyin_videos.db
 ```
 
-如果之前在青龙面板里已经跑过 f2，把原来的 `douyin_users.db` 放到上面的 `database` 目录即可延续点赞/收藏记录；有 `douyin_videos.db` 也可以一起放进去，没有也能运行，f2 需要时会自行创建。抖音 Cookie 会以 UTF-8 写入 `/config/douyin/douyin_cookie.txt`，既支持统一主页从 `cookies.txt` 拆分导入，也支持在抖音页面直接粘贴 `app.yaml` 里的 `cookie:` 段单独保存。保存时会按本地参考 `app.yaml` 里的字段和顺序重新拼接，只保留抖音实际需要的项，并额外丢弃非 ASCII 值，避免 `httpx` 在构造 Cookie 请求头时因异常字符报错。`douyin_cookie.txt` 本身会按参考 `app.yaml` 的 `cookie:` 多行段保存，生成给 f2 的任务 YAML 也会继续按同样的换行和缩进格式输出，并默认写入 `/F2DL`、`mode: like/collection`、`folderize: true`、`cover: false` 和 `{create}-{nickname}-{aweme_id}` 命名。
+如果之前在青龙面板里已经跑过 f2，把原来的 `douyin_users.db` 放到上面的 `database` 目录即可延续点赞/收藏记录；有 `douyin_videos.db` 也可以一起放进去，没有也能运行，f2 需要时会自行创建。抖音 Cookie 会以 UTF-8 写入 `/config/douyin/douyin_cookie.txt`，既支持统一主页从 `cookies.txt` 拆分导入，也支持在抖音页面直接粘贴 `app.yaml` 里的 `cookie:` 段单独保存。保存时会按本地参考 `app.yaml` 的字段和顺序重新拼接，只保留抖音实际需要的项，并额外丢弃非 ASCII 值，避免 `httpx` 在构造 Cookie 请求头时因异常字符报错。`douyin_cookie.txt` 本身会按参考 `app.yaml` 的 `cookie:` 多行段保存，统一首页导入和抖音页单独保存都会立即同步重写 `like.yaml`、`collection.yaml`，任务 YAML 继续按同样的换行和缩进格式输出，并默认写入 `/F2DL`、`mode: like/collection`、`folderize: true`、`cover: false` 和 `{create}-{nickname}-{aweme_id}` 命名。
 
 下载目录挂载为 `/volume2/qinlong-debian/F2DL:/F2DL`。f2 会按配置里的 `mode` 自动保存到：
 

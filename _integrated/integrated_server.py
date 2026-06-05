@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+import yaml
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -22,7 +23,39 @@ from urllib.parse import parse_qs, urlsplit
 PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
 BROWSER_LOCK_PATH = os.environ.get("BROWSER_LOCK_PATH", "/tmp/nas-auto-browser.lock")
-APP_VERSION = os.environ.get("APP_VERSION", "v1.3.4")
+APP_VERSION = os.environ.get("APP_VERSION", "v1.3.5")
+DOUYIN_CONFIG_PATH = Path(os.environ.get("DOUYIN_CONFIG_PATH", "/config/douyin/config.json"))
+DOUYIN_COOKIE_YAML_PLACEHOLDER = "__DOUYIN_COOKIE_PLACEHOLDER__"
+DEFAULT_DOUYIN_CONFIG: dict[str, Any] = {
+    "download_dir": "/F2DL",
+    "f2_config_dir": "/config/douyin/f2",
+    "defaults": {
+        "cover": False,
+        "desc": False,
+        "folderize": True,
+        "interval": "all",
+        "lyric": True,
+        "max_connections": 5,
+        "max_counts": 0,
+        "max_retries": 5,
+        "max_tasks": 10,
+        "naming": "{create}-{nickname}-{aweme_id}",
+        "page_counts": 20,
+        "timeout": 10,
+    },
+    "jobs": [
+        {
+            "name": "like",
+            "mode": "like",
+            "url": "https://www.douyin.com/user/MS4wLjABAAAANozRUmTPV4ZpvI-QTMqocY_vLWGwerzSX5vlzfgWl5Q?from_tab_name=main&showTab=like&vid=7126720963458223363",
+        },
+        {
+            "name": "collection",
+            "mode": "collection",
+            "url": "https://www.douyin.com/user/MS4wLjABAAAANozRUmTPV4ZpvI-QTMqocY_vLWGwerzSX5vlzfgWl5Q?from_tab_name=main&showTab=favorite_collection&vid=7126720963458223363",
+        },
+    ],
+}
 
 SERVICES = {
     "xhs": {"name": "小红书", "port": 18081, "path": "/xhs/", "config": "/config/xhs/config.json"},
@@ -419,6 +452,73 @@ def render_douyin_cookie_block(cookie_text: str, base_indent: str = "") -> str:
     return "\n".join(render_douyin_cookie_block_lines(cookie_text, base_indent)) + "\n"
 
 
+def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = json.loads(json.dumps(base))
+    return deep_update(merged, override)
+
+
+def job_key(job: dict[str, Any], index: int) -> str:
+    name = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(job.get("name") or "")).strip("-")
+    return name or f"job-{index + 1}"
+
+
+def render_douyin_job_yaml(douyin: dict[str, Any]) -> str:
+    payload = {"douyin": dict(douyin, cookie=DOUYIN_COOKIE_YAML_PLACEHOLDER)}
+    rendered = yaml.safe_dump(payload, allow_unicode=True, sort_keys=False, width=100000)
+    placeholder_pattern = re.compile(
+        rf"^  cookie:\s+['\"]?{re.escape(DOUYIN_COOKIE_YAML_PLACEHOLDER)}['\"]?\s*$"
+    )
+    output_lines: list[str] = []
+    replaced = False
+    for line in rendered.splitlines():
+        if placeholder_pattern.match(line):
+            output_lines.extend(render_douyin_cookie_block_lines(str(douyin.get("cookie") or ""), "  "))
+            replaced = True
+            continue
+        output_lines.append(line)
+    if not replaced:
+        raise RuntimeError("未找到抖音 Cookie 占位符，无法生成任务 YAML")
+    return "\n".join(output_lines) + "\n"
+
+
+def build_douyin_job_payload(config: dict[str, Any], job: dict[str, Any], cookie_text: str) -> dict[str, Any]:
+    defaults = dict(config.get("defaults") or {})
+    return {
+        "cookie": extract_douyin_cookie_text(cookie_text) if "cookie:" in cookie_text else "; ".join(
+            f"{name}={value}" for name, value in parse_cookie_pairs(cookie_text)
+        ),
+        "cover": bool(defaults.get("cover", False)),
+        "desc": bool(defaults.get("desc", False)),
+        "folderize": bool(defaults.get("folderize", True)),
+        "interval": str(defaults.get("interval") or "all"),
+        "languages": defaults.get("languages"),
+        "lyric": bool(defaults.get("lyric", True)),
+        "max_connections": int(defaults.get("max_connections") or 5),
+        "max_counts": int(defaults.get("max_counts") or 0),
+        "max_retries": int(defaults.get("max_retries") or 5),
+        "max_tasks": int(defaults.get("max_tasks") or 10),
+        "mode": str(job.get("mode") or "like"),
+        "music": defaults.get("music"),
+        "naming": str(defaults.get("naming") or "{create}-{nickname}-{aweme_id}"),
+        "page_counts": int(defaults.get("page_counts") or 20),
+        "path": str(config.get("download_dir") or "/F2DL"),
+        "timeout": int(defaults.get("timeout") or 10),
+        "url": str(job.get("url") or ""),
+    }
+
+
+def sync_douyin_job_configs(cookie_text: str) -> None:
+    config = deep_merge(DEFAULT_DOUYIN_CONFIG, read_json(DOUYIN_CONFIG_PATH))
+    normalized_cookie = extract_douyin_cookie_text(cookie_text) if "cookie:" in cookie_text else "; ".join(
+        f"{name}={value}" for name, value in parse_cookie_pairs(cookie_text)
+    )
+    config_dir = Path(str(config.get("f2_config_dir") or "/config/douyin/f2"))
+    config_dir.mkdir(parents=True, exist_ok=True)
+    for index, job in enumerate(config.get("jobs") or []):
+        payload = build_douyin_job_payload(config, job, normalized_cookie)
+        (config_dir / f"{job_key(job, index)}.yaml").write_text(render_douyin_job_yaml(payload), encoding="utf-8")
+
+
 def parse_netscape_cookies(text: str) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for line in text.splitlines():
@@ -471,10 +571,9 @@ def import_all_cookie(text: str) -> dict[str, Any]:
                     lines.append(f".x.com\tTRUE\t/\tTRUE\t{expires}\t{name}\t{value}")
                 output.write_text("\n".join(lines) + "\n", encoding="utf-8")
             elif key == "douyin":
-                output.write_text(
-                    render_douyin_cookie_block("; ".join(f"{name}={value}" for name, value in selected.items())),
-                    encoding="utf-8",
-                )
+                cookie_text = "; ".join(f"{name}={value}" for name, value in selected.items())
+                output.write_text(render_douyin_cookie_block(cookie_text), encoding="utf-8")
+                sync_douyin_job_configs(cookie_text)
             else:
                 output.write_text("; ".join(f"{name}={value}" for name, value in selected.items()) + "\n", encoding="utf-8")
         result[key] = {"count": len(selected), "output": str(rule["output"]), "names": sorted(selected)}

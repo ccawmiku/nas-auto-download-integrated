@@ -393,6 +393,31 @@ def render_douyin_job_yaml(douyin: dict[str, Any]) -> str:
     return "\n".join(output_lines) + "\n"
 
 
+def build_douyin_job_payload(config: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
+    cookie = read_cookie(str(config.get("cookie_file") or ""))
+    defaults = dict(config.get("defaults") or {})
+    return {
+        "cookie": cookie,
+        "cover": bool(defaults.get("cover", False)),
+        "desc": bool(defaults.get("desc", False)),
+        "folderize": bool(defaults.get("folderize", True)),
+        "interval": str(defaults.get("interval") or "all"),
+        "languages": defaults.get("languages"),
+        "lyric": bool(defaults.get("lyric", True)),
+        "max_connections": int(defaults.get("max_connections") or 5),
+        "max_counts": int(defaults.get("max_counts") or 0),
+        "max_retries": int(defaults.get("max_retries") or 5),
+        "max_tasks": int(defaults.get("max_tasks") or 10),
+        "mode": str(job.get("mode") or "like"),
+        "music": defaults.get("music"),
+        "naming": str(defaults.get("naming") or "{create}-{nickname}-{aweme_id}"),
+        "page_counts": int(defaults.get("page_counts") or 20),
+        "path": str(config.get("download_dir") or "/F2DL"),
+        "timeout": int(defaults.get("timeout") or 10),
+        "url": str(job.get("url") or ""),
+    }
+
+
 def cookie_summary(cookie_text: str) -> dict[str, Any]:
     pairs = parse_cookie_pairs(cookie_text)
     names = [name for name, _value in pairs]
@@ -531,6 +556,14 @@ class App:
             yaml.safe_dump(load_f2_runtime_conf(), allow_unicode=True, sort_keys=False, width=100000),
             encoding="utf-8",
         )
+        self.sync_job_configs()
+
+    def sync_job_configs(self) -> None:
+        for index, job in enumerate(self.config.get("jobs") or []):
+            key = job_key(job, index)
+            config_path = Path(str(self.config.get("f2_config_dir") or "/config/douyin/f2")) / f"{key}.yaml"
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(render_douyin_job_yaml(build_douyin_job_payload(self.config, job)), encoding="utf-8")
 
     def reload_config(self) -> None:
         self.config = load_config(self.config_path)
@@ -561,6 +594,7 @@ class App:
         output = Path(str(self.config.get("cookie_file") or ""))
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(render_cookie_block(normalized), encoding="utf-8")
+        self.sync_job_configs()
         summary_text = cookie_summary_text(normalized)
         self.log.write(f"已更新抖音 Cookie：{summary_text}")
         self.set_notice(f"抖音 Cookie 已保存：{summary_text}")
@@ -635,28 +669,7 @@ class App:
         threading.Thread(target=self.check_f2_version, daemon=True).start()
 
     def f2_config_for_job(self, job: dict[str, Any], index: int) -> Path:
-        cookie = read_cookie(str(self.config.get("cookie_file") or ""))
-        defaults = dict(self.config.get("defaults") or {})
-        douyin = {
-            "cookie": cookie,
-            "cover": bool(defaults.get("cover", False)),
-            "desc": bool(defaults.get("desc", False)),
-            "folderize": bool(defaults.get("folderize", True)),
-            "interval": str(defaults.get("interval") or "all"),
-            "languages": defaults.get("languages"),
-            "lyric": bool(defaults.get("lyric", True)),
-            "max_connections": int(defaults.get("max_connections") or 5),
-            "max_counts": int(defaults.get("max_counts") or 0),
-            "max_retries": int(defaults.get("max_retries") or 5),
-            "max_tasks": int(defaults.get("max_tasks") or 10),
-            "mode": str(job.get("mode") or "like"),
-            "music": defaults.get("music"),
-            "naming": str(defaults.get("naming") or "{create}-{nickname}-{aweme_id}"),
-            "page_counts": int(defaults.get("page_counts") or 20),
-            "path": str(self.config.get("download_dir") or "/F2DL"),
-            "timeout": int(defaults.get("timeout") or 10),
-            "url": str(job.get("url") or ""),
-        }
+        douyin = build_douyin_job_payload(self.config, job)
         config_path = Path(str(self.config.get("f2_config_dir") or "/config/douyin/f2")) / f"{job_key(job, index)}.yaml"
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(render_douyin_job_yaml(douyin), encoding="utf-8")
