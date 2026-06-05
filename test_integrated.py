@@ -28,7 +28,7 @@ from pixiv_auto_worker import classify_error, safe_extract_zip
 class IntegratedPageTests(unittest.TestCase):
     def test_home_page_includes_version_and_service_cards(self) -> None:
         body = integrated_server.page().decode("utf-8")
-        self.assertIn("v1.3.5", body)
+        self.assertIn("v1.3.6", body)
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)
@@ -57,9 +57,9 @@ class IntegratedPageTests(unittest.TestCase):
                 integrated_server.SITE_RULES["douyin"] = old_rule
                 integrated_server.DOUYIN_CONFIG_PATH = old_config_path
             self.assertEqual(result["douyin"]["count"], 2)
-            self.assertEqual(output.read_text(encoding="utf-8"), "cookie: sessionid=def;\n  ttwid=abc;\n")
-            self.assertIn("  cookie: sessionid=def;\n    ttwid=abc;\n", (f2_dir / "like.yaml").read_text(encoding="utf-8"))
-            self.assertIn("  cookie: sessionid=def;\n    ttwid=abc;\n", (f2_dir / "collection.yaml").read_text(encoding="utf-8"))
+            self.assertEqual(output.read_text(encoding="utf-8"), "cookie: sessionid=def;\n  ttwid=abc\n")
+            self.assertIn("  cookie: sessionid=def;\n    ttwid=abc\n", (f2_dir / "like.yaml").read_text(encoding="utf-8"))
+            self.assertIn("  cookie: sessionid=def;\n    ttwid=abc\n", (f2_dir / "collection.yaml").read_text(encoding="utf-8"))
 
     def test_imports_douyin_cookie_from_app_yaml_segment(self) -> None:
         old_rule = integrated_server.SITE_RULES["douyin"]
@@ -86,9 +86,9 @@ class IntegratedPageTests(unittest.TestCase):
                 integrated_server.SITE_RULES["douyin"] = old_rule
                 integrated_server.DOUYIN_CONFIG_PATH = old_config_path
             self.assertEqual(result["douyin"]["count"], 2)
-            self.assertEqual(output.read_text(encoding="utf-8"), "cookie: sessionid=abc;\n  ttwid=def;\n")
-            self.assertIn("  cookie: sessionid=abc;\n    ttwid=def;\n", (f2_dir / "like.yaml").read_text(encoding="utf-8"))
-            self.assertIn("  cookie: sessionid=abc;\n    ttwid=def;\n", (f2_dir / "collection.yaml").read_text(encoding="utf-8"))
+            self.assertEqual(output.read_text(encoding="utf-8"), "cookie: sessionid=abc;\n  ttwid=def\n")
+            self.assertIn("  cookie: sessionid=abc;\n    ttwid=def\n", (f2_dir / "like.yaml").read_text(encoding="utf-8"))
+            self.assertIn("  cookie: sessionid=abc;\n    ttwid=def\n", (f2_dir / "collection.yaml").read_text(encoding="utf-8"))
 
 
 class DouyinCookieTests(unittest.TestCase):
@@ -124,8 +124,17 @@ class DouyinCookieTests(unittest.TestCase):
 
     def test_renders_saved_cookie_block_with_reference_line_breaks(self) -> None:
         rendered = render_cookie_block("sessionid=abc; ttwid=def")
-        self.assertEqual(rendered, "cookie: sessionid=abc;\n  ttwid=def;\n")
+        self.assertEqual(rendered, "cookie: sessionid=abc;\n  ttwid=def\n")
         self.assertEqual(normalize_cookie_text(rendered), "sessionid=abc; ttwid=def")
+
+    def test_renders_saved_cookie_block_with_reference_grouping(self) -> None:
+        rendered = render_cookie_block(
+            "my_rd=1; volume_info=2; WallpaperGuide=3; FOLLOW_NUMBER_YELLOW_POINT_INFO=4"
+        )
+        self.assertEqual(
+            rendered,
+            "cookie: my_rd=1; volume_info=2; WallpaperGuide=3;\n  FOLLOW_NUMBER_YELLOW_POINT_INFO=4\n",
+        )
 
     def test_renders_job_yaml_with_reference_cookie_line_breaks(self) -> None:
         rendered = render_douyin_job_yaml(
@@ -150,9 +159,9 @@ class DouyinCookieTests(unittest.TestCase):
                 "url": "https://www.douyin.com/user/example?showTab=like",
             }
         )
-        self.assertIn("  cookie: sessionid=abc;\n    ttwid=def;\n", rendered)
+        self.assertIn("  cookie: sessionid=abc;\n    ttwid=def\n", rendered)
         loaded = yaml.safe_load(rendered) or {}
-        self.assertEqual(loaded["douyin"]["cookie"], "sessionid=abc; ttwid=def;")
+        self.assertEqual(loaded["douyin"]["cookie"], "sessionid=abc; ttwid=def")
 
 
 class PixivNetworkTests(unittest.TestCase):

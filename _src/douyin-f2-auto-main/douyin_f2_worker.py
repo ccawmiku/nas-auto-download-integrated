@@ -139,6 +139,43 @@ DOUYIN_REFERENCE_COOKIE_ORDER = (
     "gd_random",
     "bd_ticket_guard_web_domain",
 )
+DOUYIN_REFERENCE_COOKIE_LINE_GROUPS = (
+    ("UIFID_TEMP",),
+    ("UIFID",),
+    ("my_rd", "volume_info", "WallpaperGuide"),
+    ("FOLLOW_NUMBER_YELLOW_POINT_INFO",),
+    ("_bd_ticket_crypt_doamin", "record_force_login"),
+    ("stream_player_status_params",),
+    ("passport_mfa_token",),
+    ("d_ticket", "PhoneResumeUidCacheV1"),
+    ("strategyABtestKey", "passport_csrf_token"),
+    ("passport_csrf_token_default", "sdk_source_info"),
+    ("bit_env",),
+    ("gulu_source_res",),
+    ("passport_auth_mix_state", "download_guide"),
+    ("passport_assist_user",),
+    ("n_mh", "sid_guard"),
+    ("uid_tt", "uid_tt_ss"),
+    ("sid_tt", "sessionid"),
+    ("sessionid_ss", "session_tlb_tag"),
+    ("is_staff_user", "has_biz_token", "sid_ucp_v1"),
+    ("ssid_ucp_v1",),
+    ("_bd_ticket_crypt_cookie", "__security_mc_1_s_sdk_sign_data_key_web_protect"),
+    ("__security_mc_1_s_sdk_cert_key", "__security_mc_1_s_sdk_crypt_sdk"),
+    ("__security_server_data_status", "login_time", "publish_badge_show_info"),
+    ("DiscoverFeedExposedAd", "ttwid"),
+    ("enter_pc_once", "hevc_supported", "home_can_add_dy_2_desktop", "stream_recommend_feed_params"),
+    ("SelfTabRedDotControl",),
+    ("FOLLOW_LIVE_POINT_INFO",),
+    ("is_dash_user", "bd_ticket_guard_client_data"),
+    ("bd_ticket_guard_client_web_domain", "odin_tt"),
+    ("bd_ticket_guard_client_data_v2",),
+    ("IsDouyinActive", "xgplayer_user_id", "fpk1"),
+    ("fpk2", "__ac_nonce", "__ac_signature"),
+    ("s_v_web_id", "dy_swidth"),
+    ("dy_sheight", "gd_random"),
+    ("bd_ticket_guard_web_domain",),
+)
 DOUYIN_REFERENCE_COOKIE_NAMES = set(DOUYIN_REFERENCE_COOKIE_ORDER)
 COOKIE_CRITICAL_NAMES = (
     "sessionid",
@@ -360,13 +397,20 @@ def normalize_cookie_text(text: str) -> str:
 
 
 def render_cookie_block_lines(cookie_text: str, base_indent: str = "") -> list[str]:
-    pairs = parse_cookie_pairs(cookie_text)
-    if not pairs:
+    values = {name: value for name, value in parse_cookie_pairs(cookie_text)}
+    grouped_parts: list[list[str]] = []
+    for group in DOUYIN_REFERENCE_COOKIE_LINE_GROUPS:
+        line_parts = [f"{name}={values[name]}" for name in group if name in values]
+        if line_parts:
+            grouped_parts.append(line_parts)
+    if not grouped_parts:
         return [f"{base_indent}cookie:"]
     lines: list[str] = []
-    for index, (name, value) in enumerate(pairs):
+    last_index = len(grouped_parts) - 1
+    for index, line_parts in enumerate(grouped_parts):
+        suffix = ";" if index != last_index else ""
         prefix = f"{base_indent}cookie: " if index == 0 else f"{base_indent}  "
-        lines.append(f"{prefix}{name}={value};")
+        lines.append(f"{prefix}{'; '.join(line_parts)}{suffix}")
     return lines
 
 
