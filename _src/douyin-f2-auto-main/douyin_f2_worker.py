@@ -25,6 +25,16 @@ from urllib.parse import parse_qs
 
 import yaml
 
+COMMON_PATH = Path(__file__).resolve().parents[2] / "_common"
+if COMMON_PATH.exists():
+    sys.path.insert(0, str(COMMON_PATH))
+
+try:
+    from nas_auto_common.ui import app_css
+except ModuleNotFoundError:
+    def app_css(extra: str = "") -> str:
+        return extra
+
 try:
     import f2
 except Exception:
@@ -917,22 +927,18 @@ def html_page(app: App) -> str:
           <input name="url_{index}" value="{html.escape(str(job.get("url") or ""))}">
           <button formaction="/run-job?name={html.escape(key)}" type="submit">运行</button>
         </div>"""
+    page_style = app_css(
+        """
+.grid{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}
+.job{display:grid;grid-template-columns:120px 130px 120px minmax(260px,1fr) 72px;gap:8px;align-items:center;margin:8px 0}
+@media(max-width:820px){.job{grid-template-columns:1fr}}
+"""
+    )
     body = f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Douyin F2 Downloader</title>
 <style>
-body{{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#f6f7f9;color:#1d2433}}
-header{{min-height:56px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 24px;background:#111827;color:white}}
-main{{max-width:1180px;margin:0 auto;padding:20px;display:grid;gap:16px}}section{{background:#fff;border:1px solid #d9dde5;border-radius:8px;padding:16px}}
-h1{{font-size:18px;margin:0}}h2{{font-size:16px;margin:0 0 12px}}input,textarea{{box-sizing:border-box;border:1px solid #d9dde5;border-radius:6px;padding:8px;font:inherit;background:white}}
-button{{border:0;background:#111827;color:white;border-radius:6px;padding:8px 12px;cursor:pointer}}button.secondary{{background:#475569}}
-.muted{{color:#657084}}.pill{{display:inline-flex;align-items:center;padding:3px 8px;border-radius:999px;background:#e6edf6;font-size:12px;color:#334155}}
-.actions{{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}}
-.job{{display:grid;grid-template-columns:120px 130px 120px minmax(260px,1fr) 72px;gap:8px;align-items:center;margin:8px 0}}
-pre{{margin:0;background:#0f172a;color:#dbeafe;padding:12px;border-radius:6px;overflow:auto;max-height:520px;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}}
-textarea{{min-height:120px;resize:vertical}}
-.ok{{background:#ecfdf5;border-color:#bbf7d0}}
-@media(max-width:820px){{header{{padding:10px 14px;align-items:flex-start;flex-direction:column}}main{{padding:12px}}.job{{grid-template-columns:1fr}}}}
+{page_style}
 </style></head><body>
 <header><h1>Douyin F2 Downloader</h1><div><span class="pill" id="runState">运行：{"运行中" if data["running"] else "空闲"}</span> <span class="pill" id="cookieState">Cookie：{html.escape(str(cookie_info["status"]))}</span></div></header>
 <main>

@@ -32,6 +32,8 @@ class IntegratedPageTests(unittest.TestCase):
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)
+        self.assertIn("overflow-wrap:anywhere", body.replace(" ", ""))
+        self.assertNotIn("__APP_STYLE__", body)
 
     def test_imports_douyin_cookie_from_netscape_export(self) -> None:
         old_rule = integrated_server.SITE_RULES["douyin"]

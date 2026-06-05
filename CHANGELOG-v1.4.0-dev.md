@@ -17,6 +17,10 @@
   - 服务卡片状态更清晰。
   - 顶部版本和服务范围使用统一状态标签。
   - 日志长行支持自动换行，避免撑宽页面。
+- 新增 `_common/nas_auto_common` 共享层：
+  - 集成入口、Pixiv、X、抖音页面共用基础 CSS。
+  - 统一按钮、状态标签、表单、卡片、进度、日志等基础控件样式。
+  - Docker 集成镜像通过 `PYTHONPATH=/opt/nas-auto` 加载共享包。
 - 抖音 worker 减少重复写任务 YAML：
   - 增加任务配置签名。
   - 只有 Cookie、任务、默认下载配置等发生变化时才重写 `like.yaml` / `collection.yaml`。

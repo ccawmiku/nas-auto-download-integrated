@@ -28,6 +28,16 @@ from urllib.parse import parse_qs, urlparse
 import requests
 from playwright.async_api import async_playwright as _playwright_async_playwright
 
+COMMON_PATH = Path(__file__).resolve().parents[2] / "_common"
+if COMMON_PATH.exists():
+    sys.path.insert(0, str(COMMON_PATH))
+
+try:
+    from nas_auto_common.ui import app_css
+except ModuleNotFoundError:
+    def app_css(extra: str = "") -> str:
+        return extra
+
 
 APP_NAME = "X Auto Downloader"
 DEFAULT_CONFIG_PATH = Path("/config/config.json")
@@ -1668,29 +1678,7 @@ def html_page(app: App) -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>__APP_NAME__</title>
   <style>
-    :root { color-scheme: light; --bg:#f6f7f9; --panel:#fff; --line:#d9dde5; --text:#1d2433; --muted:#657084; --accent:#111827; }
-    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:var(--bg); color:var(--text); }
-    header { height:56px; display:flex; align-items:center; justify-content:space-between; padding:0 24px; background:#111827; color:white; }
-    main { max-width:1180px; margin:0 auto; padding:20px; display:grid; gap:16px; }
-    section { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; }
-    h1 { font-size:18px; margin:0; } h2 { font-size:16px; margin:0 0 12px; }
-    label { display:block; color:var(--muted); font-size:13px; margin:10px 0 5px; }
-    input, textarea { width:100%; box-sizing:border-box; border:1px solid var(--line); border-radius:6px; padding:9px 10px; font:inherit; background:white; }
-    textarea { min-height:120px; resize:vertical; }
-    button { border:0; background:var(--accent); color:white; border-radius:6px; padding:9px 14px; cursor:pointer; }
-    button.secondary { background:#475569; }
-    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
-    .actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
-    .pill { display:inline-flex; align-items:center; padding:3px 8px; border-radius:999px; background:#e6edf6; font-size:12px; color:#334155; }
-    table { width:100%; border-collapse:collapse; font-size:13px; } th,td { border-bottom:1px solid var(--line); padding:8px; text-align:left; vertical-align:top; }
-    pre { margin:0; background:#0f172a; color:#dbeafe; padding:12px; border-radius:6px; overflow:auto; max-height:520px; white-space:pre-wrap; }
-    progress { width:100%; height:16px; accent-color:#111827; }
-    .progress-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-top:12px; }
-    .metric { border:1px solid var(--line); border-radius:8px; padding:10px; background:#fbfcfe; }
-    .metric strong { display:block; font-size:18px; margin-top:4px; }
-    .help { color:var(--muted); font-size:13px; line-height:1.65; }
-    .muted { color:var(--muted); } .status { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-    @media (max-width:760px) { .grid,.progress-grid { grid-template-columns:1fr; } header { padding:0 14px; } main { padding:12px; } }
+__APP_STYLE__
   </style>
 </head>
 <body>
@@ -1846,7 +1834,7 @@ def html_page(app: App) -> str:
     setInterval(refreshStatus, 2000);
   </script>
 </body>
-</html>""".replace("__APP_NAME__", APP_NAME)
+</html>""".replace("__APP_NAME__", APP_NAME).replace("__APP_STYLE__", app_css())
 
 
 def redirect(handler: BaseHTTPRequestHandler, location: str = "/") -> None:
