@@ -22,7 +22,7 @@ from urllib.parse import parse_qs, urlsplit
 PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
 BROWSER_LOCK_PATH = os.environ.get("BROWSER_LOCK_PATH", "/tmp/nas-auto-browser.lock")
-APP_VERSION = os.environ.get("APP_VERSION", "v1.3.1")
+APP_VERSION = os.environ.get("APP_VERSION", "v1.3.2")
 
 SERVICES = {
     "xhs": {"name": "小红书", "port": 18081, "path": "/xhs/", "config": "/config/xhs/config.json"},

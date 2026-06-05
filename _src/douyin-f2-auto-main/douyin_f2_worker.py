@@ -140,6 +140,18 @@ DOUYIN_REFERENCE_COOKIE_ORDER = (
     "bd_ticket_guard_web_domain",
 )
 DOUYIN_REFERENCE_COOKIE_NAMES = set(DOUYIN_REFERENCE_COOKIE_ORDER)
+COOKIE_CRITICAL_NAMES = (
+    "sessionid",
+    "sessionid_ss",
+    "sid_tt",
+    "sid_guard",
+    "sid_ucp_v1",
+    "ssid_ucp_v1",
+    "ttwid",
+    "UIFID",
+    "UIFID_TEMP",
+    "s_v_web_id",
+)
 COOKIE_LINE_RE = re.compile(r"^\s*cookie\s*:\s*", re.IGNORECASE)
 YAML_KEY_RE = re.compile(r"^\s*[A-Za-z0-9_-]+\s*:\s*")
 URL_QUERY_RE = re.compile(r"(https?://[^\s?]+)\?[^\s]+")
@@ -351,6 +363,22 @@ def cookie_summary(cookie_text: str) -> dict[str, Any]:
     names = [name for name, _value in pairs]
     available = set(names)
     missing_required = [name for name in COOKIE_REQUIRED_NAMES if name not in available]
+    missing_critical = [name for name in COOKIE_CRITICAL_NAMES if name not in available]
+    missing_reference = [name for name in DOUYIN_REFERENCE_COOKIE_ORDER if name not in available]
+    reference_total = len(DOUYIN_REFERENCE_COOKIE_ORDER)
+    reference_present = reference_total - len(missing_reference)
+    if not pairs:
+        status = "未导入"
+        risk = "未导入"
+    elif missing_critical:
+        status = "高风险"
+        risk = "关键字段不完整"
+    elif reference_present < reference_total:
+        status = "有风险"
+        risk = "参考字段不完整"
+    else:
+        status = "正常"
+        risk = "正常"
     return {
         "present": bool(pairs),
         "length": len(cookie_text),
@@ -359,7 +387,12 @@ def cookie_summary(cookie_text: str) -> dict[str, Any]:
         "has_sessionid": "sessionid" in available,
         "has_ttwid": "ttwid" in available,
         "missing_required": missing_required,
-        "status": "已就绪" if pairs and not missing_required else ("缺少关键字段" if pairs else "未导入"),
+        "missing_critical": missing_critical,
+        "missing_reference": missing_reference,
+        "reference_present": reference_present,
+        "reference_total": reference_total,
+        "risk": risk,
+        "status": status,
     }
 
 
@@ -367,10 +400,15 @@ def cookie_summary_text(cookie_text: str) -> str:
     summary = cookie_summary(cookie_text)
     if not summary["present"]:
         return "未导入"
-    base = f"{summary['fields']} 项 / {summary['length']} 字符"
-    if summary["missing_required"]:
-        return f"{base}，缺少 {', '.join(summary['missing_required'])}"
-    return f"{base}，sessionid/ttwid 已就绪"
+    base = (
+        f"{summary['fields']} 项 / {summary['length']} 字符"
+        f"，参考 {summary['reference_present']}/{summary['reference_total']}"
+    )
+    if summary["missing_critical"]:
+        return f"{base}，关键字段缺少 {', '.join(summary['missing_critical'])}"
+    if summary["missing_reference"]:
+        return f"{base}，缺少 {len(summary['missing_reference'])} 项参考字段"
+    return f"{base}，字段完整"
 
 
 def sanitize_log_message(message: str, max_length: int = 640) -> str:
@@ -432,8 +470,11 @@ class App:
         self.running = False
         self.run_pending = False
         self.stop_event = threading.Event()
+        self.stop_run_event = threading.Event()
         self.next_run_at = 0.0
         self.current_job = ""
+        self.current_proc: subprocess.Popen[str] | None = None
+        self.current_proc_lock = threading.Lock()
         self.last_results: list[RunResult] = []
         self.last_run_message = ""
         self.last_notice = ""
@@ -489,6 +530,29 @@ class App:
         self.log.write(f"已更新抖音 Cookie：{summary_text}")
         self.set_notice(f"抖音 Cookie 已保存：{summary_text}")
         return normalized
+
+    def request_stop(self) -> bool:
+        with self.run_request_lock:
+            if not self.running and not self.run_pending:
+                message = "当前没有运行中的抖音任务"
+                self.set_notice(message)
+                self.log.write(message)
+                return False
+            self.stop_run_event.set()
+        proc: subprocess.Popen[str] | None
+        with self.current_proc_lock:
+            proc = self.current_proc
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            message = "已请求手动停止当前抖音任务"
+        else:
+            message = "已请求手动停止，当前任务结束后不会继续后续任务"
+        self.set_notice(message)
+        self.log.write(message)
+        return True
 
     def db_status(self) -> dict[str, Any]:
         state_dir = Path(str(self.config.get("f2_state_dir") or "/state/douyin/f2"))
@@ -590,6 +654,8 @@ class App:
             encoding="utf-8",
             errors="replace",
         )
+        with self.current_proc_lock:
+            self.current_proc = proc
         assert proc.stdout is not None
         timed_out = False
 
@@ -611,10 +677,17 @@ class App:
             except subprocess.TimeoutExpired:
                 proc.kill()
             returncode = proc.returncode
+        finally:
+            with self.current_proc_lock:
+                if self.current_proc is proc:
+                    self.current_proc = None
         thread.join(timeout=2)
         if timed_out:
             status = "timeout"
             message = f"超过 {timeout_seconds}s，已终止"
+        elif self.stop_run_event.is_set() and returncode not in {0, None}:
+            status = "stopped"
+            message = "已手动停止"
         elif returncode == 0:
             status = "done"
             message = "ok"
@@ -637,6 +710,9 @@ class App:
             self.log.write("抖音 f2 运行开始")
             jobs = list(self.config.get("jobs") or [])
             for index, job in enumerate(jobs):
+                if self.stop_run_event.is_set():
+                    self.log.write("收到手动停止请求，剩余任务已跳过")
+                    break
                 key = job_key(job, index)
                 if only_job and key != only_job:
                     continue
@@ -644,8 +720,10 @@ class App:
                     continue
                 results.append(self.run_job(job, index))
             self.last_results = results[-20:]
-            failures = [item for item in results if item.status not in {"done", "skipped"}]
+            failures = [item for item in results if item.status not in {"done", "skipped", "stopped"}]
             self.last_run_message = f"{len(results)} job(s), {len(failures)} failed"
+            if self.stop_run_event.is_set():
+                self.last_run_message += ", stopped"
             self.log.write(f"抖音 f2 运行结束：{self.last_run_message}")
             return results
         except Exception as error:
@@ -656,6 +734,7 @@ class App:
         finally:
             self.current_job = ""
             self.running = False
+            self.stop_run_event.clear()
             self.run_lock.release()
 
     def start_run_thread(self, only_job: str = "") -> bool:
@@ -666,6 +745,7 @@ class App:
                 self.log.write(message)
                 self.set_notice(message)
                 return False
+            self.stop_run_event.clear()
             self.run_pending = True
             self.schedule_next_run()
         threading.Thread(target=lambda: self._thread_wrap(self.run_once, only_job), daemon=True).start()
@@ -696,6 +776,7 @@ class App:
     def status(self) -> dict[str, Any]:
         return {
             "running": self.running,
+            "stop_requested": self.stop_run_event.is_set(),
             "current_job": self.current_job,
             "next_run_at": datetime.fromtimestamp(self.next_run_at).isoformat() if self.next_run_at else "",
             "cookie_present": self.cookie_present(),
@@ -752,13 +833,17 @@ textarea{{min-height:120px;resize:vertical}}
 <main>
 {f'<section class="ok" id="noticeBox">{html.escape(str(data["notice"]))}</section>' if data["notice"] else '<section class="ok" id="noticeBox" style="display:none"></section>'}
 <section><h2>控制</h2><div class="muted">下一次自动运行：<span id="nextRunAt">{html.escape(data["next_run_at"] or "未排程")}</span>；当前任务：<span id="currentJob">{html.escape(data["current_job"] or "-")}</span></div>
-<div class="actions"><form method="post" action="/run"><button type="submit">立即运行全部</button></form><form method="post" action="/reload"><button class="secondary" type="submit">重新读取配置</button></form><form method="post" action="/check-version"><button class="secondary" type="submit">检查 f2 版本</button></form></div></section>
+<div class="actions"><form method="post" action="/run"><button type="submit">立即运行全部</button></form><form method="post" action="/stop"><button class="secondary" type="submit">手动停止</button></form><form method="post" action="/reload"><button class="secondary" type="submit">重新读取配置</button></form><form method="post" action="/check-version"><button class="secondary" type="submit">检查 f2 版本</button></form></div></section>
 <section><h2>抖音 Cookie</h2><div class="grid">
 <div>状态<br><strong id="cookieStatus">{html.escape(str(cookie_info["status"]))}</strong></div>
 <div>字段数<br><strong id="cookieFields">{html.escape(str(cookie_info["fields"]))}</strong></div>
 <div>长度<br><strong id="cookieLength">{html.escape(str(cookie_info["length"]))}</strong></div>
-<div>关键字段<br><strong id="cookieRequired">{html.escape("完整" if not cookie_info["missing_required"] and cookie_info["present"] else ", ".join(cookie_info["missing_required"]) or "-")}</strong></div>
+<div>关键字段<br><strong id="cookieRequired">{html.escape("完整" if not cookie_info["missing_critical"] and cookie_info["present"] else ", ".join(cookie_info["missing_critical"]) or "-")}</strong></div>
+<div>参考字段<br><strong id="cookieReference">{html.escape(f'{cookie_info["reference_present"]}/{cookie_info["reference_total"]}')}</strong></div>
+<div>风险提示<br><strong id="cookieRisk">{html.escape(str(cookie_info["risk"]))}</strong></div>
 </div>
+<p class="muted">风险规则：关键字段缺失视为高风险；参考字段未满 {len(DOUYIN_REFERENCE_COOKIE_ORDER)} 项视为有风险；满 {len(DOUYIN_REFERENCE_COOKIE_ORDER)} 项才显示正常。</p>
+<p class="muted" id="cookieMissingRef">缺失参考字段：{html.escape(", ".join(cookie_info["missing_reference"][:16]) + (" ..." if len(cookie_info["missing_reference"]) > 16 else "") if cookie_info["missing_reference"] else "无")}</p>
 <p class="muted">支持直接粘贴 `app.yaml` 里的 `cookie:` 段或单行 Cookie header。保存时会按本地参考 `app.yaml` 的字段和顺序拼接，其他字段会丢弃，并过滤非 ASCII 值；页面和日志都不会显示明文。</p>
 <form method="post" action="/cookie">
 <textarea name="cookie_text" placeholder="cookie: sessionid=...; ttwid=..."></textarea>
@@ -798,7 +883,10 @@ const refreshStatus = async () => {{
     document.getElementById("cookieStatus").textContent = cookie.status || "未导入";
     document.getElementById("cookieFields").textContent = String(cookie.fields || 0);
     document.getElementById("cookieLength").textContent = String(cookie.length || 0);
-    document.getElementById("cookieRequired").textContent = cookie.present ? ((cookie.missing_required || []).length ? cookie.missing_required.join(", ") : "完整") : "-";
+    document.getElementById("cookieRequired").textContent = cookie.present ? ((cookie.missing_critical || []).length ? cookie.missing_critical.join(", ") : "完整") : "-";
+    document.getElementById("cookieReference").textContent = `${{cookie.reference_present || 0}}/${{cookie.reference_total || 0}}`;
+    document.getElementById("cookieRisk").textContent = cookie.risk || "未导入";
+    document.getElementById("cookieMissingRef").textContent = "缺失参考字段：" + ((cookie.missing_reference || []).length ? (cookie.missing_reference.length > 16 ? cookie.missing_reference.slice(0, 16).join(", ") + " ..." : cookie.missing_reference.join(", ")) : "无");
     document.getElementById("resultsBox").textContent = JSON.stringify(data.last_results || [], null, 2);
     document.getElementById("logBox").textContent = (data.logs || []).slice(-120).join("\\n");
     const noticeBox = document.getElementById("noticeBox");
@@ -844,6 +932,10 @@ def make_handler(app: App):
             form = parse_qs(self.rfile.read(length).decode("utf-8", errors="replace"))
             if self.path == "/run":
                 app.start_run_thread()
+                redirect(self)
+                return
+            if self.path == "/stop":
+                app.request_stop()
                 redirect(self)
                 return
             if self.path.startswith("/run-job"):

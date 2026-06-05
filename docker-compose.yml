@@ -15,7 +15,7 @@ services:
     restart: unless-stopped
 
   nas-auto-download:
-    image: ghcr.io/ccawmiku/nas-auto-download-integrated:v1.3.1
+    image: ghcr.io/ccawmiku/nas-auto-download-integrated:v1.3.2
     container_name: nas-auto-download
     depends_on:
       - xhs-api

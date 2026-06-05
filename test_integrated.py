@@ -13,14 +13,14 @@ sys.path.insert(0, str(ROOT / "_src" / "douyin-f2-auto-main"))
 sys.path.insert(0, str(ROOT / "_src" / "pixiv-auto-download-nas-main"))
 
 import integrated_server
-from douyin_f2_worker import build_f2_runtime_conf, cookie_summary, normalize_cookie_text
+from douyin_f2_worker import DOUYIN_REFERENCE_COOKIE_ORDER, build_f2_runtime_conf, cookie_summary, normalize_cookie_text
 from pixiv_auto_worker import classify_error, safe_extract_zip
 
 
 class IntegratedPageTests(unittest.TestCase):
     def test_home_page_includes_version_and_service_cards(self) -> None:
         body = integrated_server.page().decode("utf-8")
-        self.assertIn("v1.3.1", body)
+        self.assertIn("v1.3.2", body)
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)
@@ -81,6 +81,16 @@ class DouyinCookieTests(unittest.TestCase):
         summary = cookie_summary(normalized)
         self.assertEqual(summary["fields"], 2)
         self.assertEqual(summary["missing_required"], [])
+        self.assertEqual(summary["status"], "高风险")
+        self.assertEqual(summary["reference_present"], 2)
+        self.assertEqual(summary["reference_total"], len(DOUYIN_REFERENCE_COOKIE_ORDER))
+
+    def test_full_reference_cookie_is_normal(self) -> None:
+        cookie_text = "; ".join(f"{name}=x" for name in DOUYIN_REFERENCE_COOKIE_ORDER)
+        summary = cookie_summary(cookie_text)
+        self.assertEqual(summary["status"], "正常")
+        self.assertEqual(summary["risk"], "正常")
+        self.assertEqual(summary["missing_reference"], [])
 
 
 class PixivNetworkTests(unittest.TestCase):

@@ -1,6 +1,6 @@
 FROM mcr.microsoft.com/playwright/python:v1.56.0-noble
 
-ARG APP_VERSION=v1.3.1
+ARG APP_VERSION=v1.3.2
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
