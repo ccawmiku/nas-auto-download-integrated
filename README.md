@@ -25,7 +25,7 @@ docker compose up -d
 默认镜像：
 
 ```text
-ghcr.io/ccawmiku/nas-auto-download-integrated:v1.4.1-dev
+ghcr.io/ccawmiku/nas-auto-download-integrated:v1.4.2-dev
 ```
 
 每次发布都会同步更新 `docker-compose.yml` 里的镜像版本。NAS 端更新时执行 `docker compose pull && docker compose up -d`，避免复用旧镜像 tag。
@@ -76,7 +76,7 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.4.1-dev
 - 抖音页面会检查关键字段和参考 `app.yaml` 的 64 个字段，字段不满会直接提示风险
 - 抖音页面支持手动停止当前运行中的任务，停止后不会继续后续 job
 - 抖音运行目录会生成本地 `conf/conf.yaml` 并默认关闭 f2 的 Bark 推送，避免未配置 Bark 时额外报 405 噪音
-- 子页面顶部会显示“返回统一主页”
+- 统一首页使用侧边栏切换子页面，子页面不再额外注入返回条
 
 ## 抖音 f2 迁移
 

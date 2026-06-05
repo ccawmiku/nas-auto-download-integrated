@@ -1,13 +1,13 @@
-# NAS Auto Download Integrated v1.4.1-dev
+# NAS Auto Download Integrated v1.4.2-dev
 
 ## 目标
 
-`v1.4.1-dev` 是 `v1.3.6` 之后的开发版，继续做低风险的结构和界面收敛，不改动抖音 f2 Cookie 的核心格式规则。
+`v1.4.2-dev` 是 `v1.3.6` 之后的开发版，继续做低风险的结构和界面收敛，不改动抖音 f2 Cookie 的核心格式规则。
 
 ## 已调整
 
 - `main` 已合入 `v1.3.6`。
-- `dev` 版本号更新为 `v1.4.1-dev`，同步更新：
+- `dev` 版本号更新为 `v1.4.2-dev`，同步更新：
   - `VERSION`
   - `_integrated/Dockerfile`
   - `_integrated/integrated_server.py`
@@ -26,6 +26,10 @@
   - 服务页面通过现有代理在统一工作区中打开，不改变下载 worker 的业务逻辑。
   - Cookie 导入区明确区分“上传 cookies.txt”和“粘贴 Cookie 内容”。
   - Cookie 导入支持预览字段差异，并可多选导入小红书、X、抖音。
+- 统一子页面视觉：
+  - 删除代理注入的“返回统一主页”顶部条。
+  - 小红书页面接入共享 UI 样式，与 X、Pixiv、抖音保持统一控件和配色。
+  - 共享 CSS 升级输入框、按钮、状态标签、卡片、表格、日志、焦点态和 hover 态。
 - 抖音 worker 减少重复写任务 YAML：
   - 增加任务配置签名。
   - 只有 Cookie、任务、默认下载配置等发生变化时才重写 `like.yaml` / `collection.yaml`。

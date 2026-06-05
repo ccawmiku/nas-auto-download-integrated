@@ -33,7 +33,7 @@ except ModuleNotFoundError:
 PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
 BROWSER_LOCK_PATH = os.environ.get("BROWSER_LOCK_PATH", "/tmp/nas-auto-browser.lock")
-APP_VERSION = os.environ.get("APP_VERSION", "v1.4.1-dev")
+APP_VERSION = os.environ.get("APP_VERSION", "v1.4.2-dev")
 DOUYIN_CONFIG_PATH = Path(os.environ.get("DOUYIN_CONFIG_PATH", "/config/douyin/config.json"))
 DOUYIN_COOKIE_YAML_PLACEHOLDER = "__DOUYIN_COOKIE_PLACEHOLDER__"
 DEFAULT_DOUYIN_CONFIG: dict[str, Any] = {
@@ -790,27 +790,28 @@ def page(message: str = "") -> bytes:
     lock = "占用中，其他浏览器任务会等待" if Path(BROWSER_LOCK_PATH).exists() else "空闲"
     shell_css = app_css(
         """
-body{background:#f4f6f8}
-.app-shell{min-height:100vh;display:grid;grid-template-columns:260px minmax(0,1fr)}
-.shell-sidebar{height:100vh;position:sticky;top:0;background:#171b24;color:#f8fafc;padding:18px;display:flex;flex-direction:column;gap:18px}
-.brand{display:grid;gap:3px;padding:4px 2px 10px}
-.brand strong{font-size:20px}.brand span{color:#a8b3c7;font-size:12px}
-.nav-group{display:grid;gap:8px}.nav-title{color:#8792a6;font-size:12px;padding:0 10px}
-.nav-item{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;background:transparent;color:#e5e7eb;text-decoration:none;text-align:left;font:inherit;border:1px solid transparent;border-radius:8px;padding:10px;cursor:pointer}
-.nav-item:hover,.nav-item.active{background:#222838;border-color:#323b52}
-.nav-item em{font-style:normal;color:#a8b3c7;font-size:12px}.nav-item.ready em{color:#86efac}.nav-item.starting em{color:#fbbf24}
-.workspace{min-width:0}.topbar{background:#fff;color:var(--text);border-bottom:1px solid var(--line);min-height:64px}
+body{background:#f3f5f7}
+.app-shell{min-height:100vh;display:grid;grid-template-columns:268px minmax(0,1fr)}
+.shell-sidebar{height:100vh;position:sticky;top:0;background:#20242c;color:#f8fafc;padding:18px;display:flex;flex-direction:column;gap:18px;border-right:1px solid rgba(255,255,255,.08)}
+.brand{display:grid;gap:4px;padding:4px 2px 12px;border-bottom:1px solid rgba(255,255,255,.08)}
+.brand strong{font-size:21px;letter-spacing:0}.brand span{color:#aeb7c4;font-size:12px}
+.nav-group{display:grid;gap:8px}.nav-title{color:#8f9aa8;font-size:12px;padding:0 10px}
+.nav-item{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;background:transparent;color:#eef2f6;text-decoration:none;text-align:left;font:inherit;border:1px solid transparent;border-radius:8px;padding:10px;cursor:pointer}
+.nav-item:hover,.nav-item.active{background:#2b3039;border-color:#3a424d}
+.nav-item.active{box-shadow:inset 3px 0 0 var(--accent)}
+.nav-item em{font-style:normal;color:#aeb7c4;font-size:12px}.nav-item.ready em{color:#90e2bd}.nav-item.starting em{color:#f3c969}
+.workspace{min-width:0}.topbar{background:rgba(255,255,255,.94);color:var(--text);border-bottom:1px solid var(--line);min-height:64px;backdrop-filter:blur(8px)}
 .topbar .status{margin-left:auto}.shell-main{max-width:none;padding:24px;align-content:start}
-.hero-panel{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;align-items:end;background:#fff;border:1px solid var(--line);border-radius:8px;padding:20px}
-.hero-panel h1{font-size:24px}.hero-panel p{margin:8px 0 0}.summary-strip{display:flex;gap:10px;flex-wrap:wrap}
-.summary-card{min-width:128px;border:1px solid var(--line);border-radius:8px;background:var(--panel-soft);padding:10px}
-.summary-card span{display:block;color:var(--muted);font-size:12px}.summary-card strong{display:block;margin-top:4px;font-size:18px}
+.hero-panel{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;align-items:end;background:#fff;border:1px solid var(--line);border-radius:8px;padding:22px;box-shadow:var(--shadow)}
+.hero-panel h1{font-size:25px}.hero-panel p{margin:8px 0 0}.summary-strip{display:flex;gap:10px;flex-wrap:wrap}
+.summary-card{min-width:132px;border:1px solid var(--line);border-radius:8px;background:var(--panel-soft);padding:12px}
+.summary-card span{display:block;color:var(--muted);font-size:12px}.summary-card strong{display:block;margin-top:4px;font-size:19px}
 .dashboard-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(320px,.65fr);gap:16px}
 .service-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
 .import-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,.55fr);gap:14px}
-.target-grid{display:grid;gap:10px}.target-check{display:flex;align-items:center;gap:8px;margin:0;border:1px solid var(--line);border-radius:8px;padding:10px;background:var(--panel-soft);color:var(--text)}
+.target-grid{display:grid;gap:10px}.target-check{display:flex;align-items:center;gap:8px;margin:0;border:1px solid var(--line);border-radius:8px;padding:11px;background:var(--panel-soft);color:var(--text)}
 .target-check input{width:auto}.target-check span{display:grid;gap:2px}.target-check small{color:var(--muted)}
-.preview-grid{display:grid;gap:10px}.preview-card{border:1px solid var(--line);border-radius:8px;padding:12px;background:var(--panel-soft)}
+.preview-grid{display:grid;gap:10px;margin-top:14px}.preview-card{border:1px solid var(--line);border-radius:8px;padding:12px;background:var(--panel-soft)}
 .preview-card header{all:unset;display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
 .preview-card h3{margin:0;font-size:15px}.preview-card dl{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:0}
 .preview-card dt{color:var(--muted);font-size:12px}.preview-card dd{margin:2px 0 0;font-weight:700}.preview-names{margin-top:8px;color:var(--muted);font-size:12px;line-height:1.55}
@@ -1010,13 +1011,6 @@ def rewrite_html(prefix: str, body: bytes, content_type: str) -> bytes:
     }
     for src, dst in replacements.items():
         text = text.replace(src, dst)
-    back = (
-        '<div style="position:sticky;top:0;z-index:9999;background:#111827;color:#fff;'
-        'padding:8px 14px;font:14px system-ui,-apple-system,Segoe UI,sans-serif">'
-        '<a href="/" style="color:#fff;text-decoration:none">← 返回统一主页</a></div>'
-    )
-    if "<body>" in text and "返回统一主页" not in text:
-        text = text.replace("<body>", "<body>" + back, 1)
     return text.encode("utf-8")
 
 

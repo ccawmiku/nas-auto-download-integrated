@@ -28,7 +28,7 @@ from pixiv_auto_worker import classify_error, safe_extract_zip
 class IntegratedPageTests(unittest.TestCase):
     def test_home_page_includes_version_and_service_cards(self) -> None:
         body = integrated_server.page().decode("utf-8")
-        self.assertIn("v1.4.1-dev", body)
+        self.assertIn("v1.4.2-dev", body)
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)
@@ -37,6 +37,12 @@ class IntegratedPageTests(unittest.TestCase):
         self.assertIn("预览差异", body)
         self.assertIn("overflow-wrap:anywhere", body.replace(" ", ""))
         self.assertNotIn("__APP_STYLE__", body)
+
+    def test_proxy_rewrite_does_not_inject_back_bar(self) -> None:
+        body = integrated_server.rewrite_html("/x/", b"<html><body><main>ok</main></body></html>", "text/html")
+        text = body.decode("utf-8")
+        self.assertNotIn("返回统一主页", text)
+        self.assertIn("<main>ok</main>", text)
 
     def test_imports_douyin_cookie_from_netscape_export(self) -> None:
         old_rule = integrated_server.SITE_RULES["douyin"]

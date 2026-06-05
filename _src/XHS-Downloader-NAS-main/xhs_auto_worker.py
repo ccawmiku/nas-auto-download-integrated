@@ -19,6 +19,16 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
+COMMON_PATH = Path(__file__).resolve().parents[2] / "_common"
+if COMMON_PATH.exists():
+    sys.path.insert(0, str(COMMON_PATH))
+
+try:
+    from nas_auto_common.ui import app_css
+except ModuleNotFoundError:
+    def app_css(extra: str = "") -> str:
+        return extra
+
 
 NOTE_URL_RE = re.compile(
     r"https?://(?:www\.)?(?:xiaohongshu\.com|xhslink\.com)/[^\s\"'<>]+",
@@ -710,166 +720,7 @@ DASHBOARD_HTML = r"""<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>XHS Auto Worker</title>
   <style>
-    :root {
-      color-scheme: light;
-      --bg: #f7f4ee;
-      --panel: #fffdf8;
-      --panel-strong: #ffffff;
-      --line: #ded7cc;
-      --text: #2f2a24;
-      --muted: #756f66;
-      --accent: #b85c38;
-      --accent-soft: #f4e5da;
-      --good: #177245;
-      --warn: #a45c00;
-      --bad: #b42318;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      line-height: 1.45;
-    }
-    header {
-      background: rgba(255, 253, 248, 0.92);
-      border-bottom: 1px solid var(--line);
-      padding: 16px 26px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-      position: sticky;
-      top: 0;
-      z-index: 10;
-      backdrop-filter: blur(10px);
-    }
-    h1 { margin: 0; font-size: 20px; letter-spacing: 0; font-weight: 720; }
-    main { max-width: 1180px; margin: 0 auto; padding: 22px; }
-    .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-    button {
-      border: 1px solid #9d4d2f;
-      background: var(--accent);
-      color: #fff;
-      border-radius: 8px;
-      padding: 9px 14px;
-      font-weight: 650;
-      cursor: pointer;
-    }
-    button:hover { background: #a84f31; }
-    button:disabled { opacity: 0.55; cursor: wait; }
-    label {
-      display: block;
-      margin: 0 0 6px;
-      font-size: 13px;
-      font-weight: 650;
-    }
-    textarea, input {
-      width: 100%;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 10px 11px;
-      margin: 0 0 12px;
-      font: inherit;
-      background: var(--panel-strong);
-      color: var(--text);
-    }
-    textarea:focus, input:focus {
-      outline: 2px solid var(--accent-soft);
-      border-color: #c57b5c;
-    }
-    textarea {
-      resize: vertical;
-      min-height: 112px;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 12px;
-    }
-    .formbar { margin-top: 2px; }
-    .pill {
-      display: inline-flex;
-      align-items: center;
-      min-height: 30px;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      background: var(--panel-strong);
-      padding: 4px 10px;
-      color: var(--muted);
-      font-size: 13px;
-      white-space: nowrap;
-    }
-    .pill.good { color: var(--good); border-color: #acd9c0; background: #eefaf3; }
-    .pill.warn { color: var(--warn); border-color: #f0cc91; background: #fff8eb; }
-    .pill.bad { color: var(--bad); border-color: #efb0aa; background: #fff1f0; }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 12px;
-      margin-bottom: 16px;
-    }
-    .metric, section {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      box-shadow: 0 1px 0 rgba(47, 42, 36, 0.03);
-    }
-    .metric { padding: 14px; min-height: 88px; }
-    .metric .label { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
-    .metric .value { font-size: 20px; font-weight: 700; overflow-wrap: anywhere; }
-    section { margin-bottom: 16px; overflow: hidden; }
-    h2 {
-      margin: 0;
-      padding: 13px 16px;
-      border-bottom: 1px solid var(--line);
-      font-size: 16px;
-      letter-spacing: 0;
-    }
-    .body { padding: 14px 16px; }
-    table { width: 100%; border-collapse: collapse; font-size: 14px; }
-    th, td { text-align: left; border-bottom: 1px solid #eef0f3; padding: 9px 8px; vertical-align: top; }
-    th { color: var(--muted); font-weight: 650; background: #fafbfc; }
-    tr:last-child td { border-bottom: 0; }
-    code, pre {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 12px;
-    }
-    pre {
-      margin: 0;
-      background: #111827;
-      color: #d1d5db;
-      border-radius: 8px;
-      padding: 12px;
-      min-height: 220px;
-      max-height: 420px;
-      overflow: auto;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-    .split {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 16px;
-    }
-    .kv {
-      display: grid;
-      grid-template-columns: 160px minmax(0, 1fr);
-      gap: 8px 12px;
-      font-size: 14px;
-    }
-    .kv div:nth-child(odd) { color: var(--muted); }
-    .muted { color: var(--muted); }
-    .nowrap { white-space: nowrap; }
-    @media (max-width: 860px) {
-      header { align-items: flex-start; flex-direction: column; }
-      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .split { grid-template-columns: 1fr; }
-      .kv { grid-template-columns: 1fr; }
-    }
-    @media (max-width: 520px) {
-      main { padding: 12px; }
-      .grid { grid-template-columns: 1fr; }
-      table { font-size: 13px; }
-    }
+__APP_STYLE__
   </style>
 </head>
 <body>
@@ -1075,7 +926,30 @@ DASHBOARD_HTML = r"""<!doctype html>
   </script>
 </body>
 </html>
+""".replace(
+    "__APP_STYLE__",
+    app_css(
+        """
+header{position:sticky;top:0;z-index:10;background:rgba(255,255,255,.94);color:var(--text);backdrop-filter:blur(8px)}
+main{display:block;max-width:1180px}
+.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:16px}
+.metric{min-height:88px}
+section{padding:0;margin-bottom:16px;overflow:hidden}
+section h2{margin:0;padding:14px 16px;border-bottom:1px solid var(--line)}
+.body{padding:14px 16px}
+textarea{min-height:112px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}
+.pill.good{background:var(--ok-bg);border-color:var(--ok-line);color:var(--ok)}
+.pill.bad{background:var(--danger-bg);border-color:#efb0aa;color:var(--danger)}
+.split{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.kv{display:grid;grid-template-columns:160px minmax(0,1fr);gap:8px 12px;font-size:14px}
+.kv div:nth-child(odd){color:var(--muted)}
+.nowrap{white-space:nowrap}
+@media(max-width:860px){header{align-items:flex-start;flex-direction:column}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.split{grid-template-columns:1fr}.kv{grid-template-columns:1fr}}
+@media(max-width:520px){.grid{grid-template-columns:1fr}table{font-size:13px}}
 """
+    ),
+)
 
 
 def deep_update(target: dict[str, Any], source: dict[str, Any]) -> None:
