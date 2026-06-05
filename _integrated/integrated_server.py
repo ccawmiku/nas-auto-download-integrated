@@ -56,58 +56,6 @@ SITE_RULES = {
         "output": Path("/config/douyin/douyin_cookie.txt"),
         "domains": {"douyin.com", ".douyin.com", "www.douyin.com", ".www.douyin.com"},
         "all_names": True,
-        "names": {
-            "__ac_nonce",
-            "__ac_signature",
-            "__security_mc_1_s_sdk_cert_key",
-            "__security_mc_1_s_sdk_crypt_sdk",
-            "__security_mc_1_s_sdk_sign_data_key_web_protect",
-            "__security_server_data_status",
-            "_bd_ticket_crypt_cookie",
-            "_bd_ticket_crypt_doamin",
-            "bd_ticket_guard_client_data",
-            "bd_ticket_guard_client_data_v2",
-            "bd_ticket_guard_client_web_domain",
-            "bd_ticket_guard_web_domain",
-            "bit_env",
-            "csrf_session_id",
-            "d_ticket",
-            "download_guide",
-            "dy_sheight",
-            "dy_swidth",
-            "fpk1",
-            "fpk2",
-            "gulu_source_res",
-            "is_staff_user",
-            "login_time",
-            "msToken",
-            "n_mh",
-            "odin_tt",
-            "passport_assist_user",
-            "passport_auth_mix_state",
-            "passport_csrf_token",
-            "passport_csrf_token_default",
-            "passport_mfa_token",
-            "record_force_login",
-            "s_v_web_id",
-            "sdk_source_info",
-            "session_tlb_tag",
-            "sessionid",
-            "sessionid_ss",
-            "sid_guard",
-            "sid_tt",
-            "sid_ucp_v1",
-            "ssid_ucp_v1",
-            "stream_player_status_params",
-            "strategyABtestKey",
-            "ttwid",
-            "uid_tt",
-            "uid_tt_ss",
-            "UIFID",
-            "UIFID_TEMP",
-            "volume_info",
-            "xgplayer_user_id",
-        },
     },
 }
 
@@ -337,6 +285,17 @@ def parse_cookie_pairs(text: str) -> list[tuple[str, str]]:
     return pairs
 
 
+def dedupe_cookie_pairs(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    deduped: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for name, value in pairs:
+        if name in seen:
+            deduped = [pair for pair in deduped if pair[0] != name]
+        seen.add(name)
+        deduped.append((name, value))
+    return deduped
+
+
 def extract_douyin_cookie_text(text: str) -> str:
     lines = str(text or "").replace("\r", "").splitlines()
     if not lines:
@@ -359,7 +318,8 @@ def extract_douyin_cookie_text(text: str) -> str:
             collected.append(stripped)
             continue
         collected.append(raw.strip())
-    return "; ".join(f"{name}={value}" for name, value in parse_cookie_pairs(" ".join(collected)))
+    pairs = dedupe_cookie_pairs(parse_cookie_pairs(" ".join(collected)))
+    return "; ".join(f"{name}={value}" for name, value in pairs)
 
 
 def parse_netscape_cookies(text: str) -> list[dict[str, str]]:
@@ -391,19 +351,19 @@ def import_all_cookie(text: str) -> dict[str, Any]:
     rows = parse_netscape_cookies(text)
     result: dict[str, Any] = {}
     for key, rule in SITE_RULES.items():
-        if key == "douyin" and not rows:
-            selected = dict(parse_cookie_pairs(extract_douyin_cookie_text(text)))
-        elif rule.get("all_names"):
-            selected = dict(values)
+        if key == "douyin":
+            if rows:
+                selected_pairs: list[tuple[str, str]] = []
+                domains = set(rule.get("domains") or [])
+                for row in rows:
+                    domain = row["domain"].removeprefix("#HttpOnly_")
+                    if domain in domains:
+                        selected_pairs.append((row["name"], row["value"]))
+                selected = dict(dedupe_cookie_pairs(selected_pairs))
+            else:
+                selected = dict(parse_cookie_pairs(extract_douyin_cookie_text(text)))
         else:
             selected = {name: values[name] for name in sorted(rule["names"]) if name in values}
-        domains = set(rule.get("domains") or [])
-        if domains and rows:
-            selected = {}
-            for row in rows:
-                domain = row["domain"].removeprefix("#HttpOnly_")
-                if domain in domains and (rule.get("all_names") or row["name"] in rule["names"]):
-                    selected[row["name"]] = row["value"]
         if selected:
             output: Path = rule["output"]
             output.parent.mkdir(parents=True, exist_ok=True)

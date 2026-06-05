@@ -33,7 +33,7 @@ except Exception:
 DEFAULT_CONFIG_PATH = Path("/config/config.json")
 DEFAULT_CONFIG: dict[str, Any] = {
     "run_interval_hours": 12,
-    "run_timeout_seconds": 300,
+    "run_timeout_seconds": 180,
     "cookie_file": "/config/douyin/douyin_cookie.txt",
     "f2_state_dir": "/state/douyin/f2",
     "f2_config_dir": "/config/douyin/f2",
@@ -190,6 +190,17 @@ def parse_cookie_pairs(cookie_text: str) -> list[tuple[str, str]]:
     return pairs
 
 
+def dedupe_cookie_pairs(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    deduped: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for name, value in pairs:
+        if name in seen:
+            deduped = [pair for pair in deduped if pair[0] != name]
+        seen.add(name)
+        deduped.append((name, value))
+    return deduped
+
+
 def extract_cookie_block(text: str) -> str:
     lines = str(text or "").replace("\r", "").splitlines()
     if not lines:
@@ -228,8 +239,10 @@ def normalize_cookie_text(text: str) -> str:
             if name:
                 rows.append((name, value))
     if rows:
+        rows = dedupe_cookie_pairs(rows)
         return "; ".join(f"{name}={value}" for name, value in rows)
-    return "; ".join(f"{name}={value}" for name, value in parse_cookie_pairs(extract_cookie_block(text)))
+    pairs = dedupe_cookie_pairs(parse_cookie_pairs(extract_cookie_block(text)))
+    return "; ".join(f"{name}={value}" for name, value in pairs)
 
 
 def cookie_summary(cookie_text: str) -> dict[str, Any]:
@@ -245,7 +258,7 @@ def cookie_summary(cookie_text: str) -> dict[str, Any]:
         "has_sessionid": "sessionid" in available,
         "has_ttwid": "ttwid" in available,
         "missing_required": missing_required,
-        "status": "可用" if pairs and not missing_required else ("缺少关键字段" if pairs else "未导入"),
+        "status": "已就绪" if pairs and not missing_required else ("缺少关键字段" if pairs else "未导入"),
     }
 
 
@@ -454,7 +467,7 @@ class App:
             self.log.write(f"{key}: {message}")
             return RunResult(key, "skipped", None, started_at, now_iso(), message)
         config_path = self.f2_config_for_job(job, index)
-        timeout_seconds = int(self.config.get("run_timeout_seconds") or 300)
+        timeout_seconds = int(self.config.get("run_timeout_seconds") or 180)
         command = [sys.executable, "-m", "f2", "dy", "-c", str(config_path)]
         env = dict(os.environ)
         env.update({"PYTHONIOENCODING": "utf-8", "NO_COLOR": "1", "COLUMNS": "160"})
@@ -638,7 +651,7 @@ textarea{{min-height:120px;resize:vertical}}
 <div>长度<br><strong id="cookieLength">{html.escape(str(cookie_info["length"]))}</strong></div>
 <div>关键字段<br><strong id="cookieRequired">{html.escape("完整" if not cookie_info["missing_required"] and cookie_info["present"] else ", ".join(cookie_info["missing_required"]) or "-")}</strong></div>
 </div>
-<p class="muted">支持直接粘贴 `app.yaml` 里的 `cookie:` 段或单行 Cookie header。保存时只写入抖音专用 Cookie，不会在页面或日志里显示明文。</p>
+<p class="muted">支持直接粘贴 `app.yaml` 里的 `cookie:` 段或单行 Cookie header。保存时会保留全部抖音域 Cookie、自动去重，并以 UTF-8 写入专用 Cookie 文件；页面和日志都不会显示明文。</p>
 <form method="post" action="/cookie">
 <textarea name="cookie_text" placeholder="cookie: sessionid=...; ttwid=..."></textarea>
 <div class="actions"><button type="submit">保存抖音 Cookie</button></div>
@@ -651,7 +664,7 @@ textarea{{min-height:120px;resize:vertical}}
 </div></section>
 <section><h2>配置</h2><form method="post" action="/settings">
 <div class="grid"><label>运行间隔（小时）<input name="run_interval_hours" type="number" min="0.1" step="0.1" value="{html.escape(str(cfg.get("run_interval_hours") or 12))}"></label>
-<label>单任务超时（秒）<input name="run_timeout_seconds" type="number" min="60" step="10" value="{html.escape(str(cfg.get("run_timeout_seconds") or 300))}"></label>
+<label>单任务超时（秒）<input name="run_timeout_seconds" type="number" min="60" step="10" value="{html.escape(str(cfg.get("run_timeout_seconds") or 180))}"></label>
 <label>下载目录<input name="download_dir" value="{html.escape(str(cfg.get("download_dir") or ""))}"></label>
 <label>f2 数据目录<input name="f2_state_dir" value="{html.escape(str(cfg.get("f2_state_dir") or ""))}"></label></div>
 {jobs_html}
@@ -766,9 +779,9 @@ def make_handler(app: App):
                 except ValueError:
                     hours = 12.0
                 try:
-                    timeout_seconds = max(60, int((form.get("run_timeout_seconds") or ["300"])[0] or "300"))
+                    timeout_seconds = max(60, int((form.get("run_timeout_seconds") or ["180"])[0] or "180"))
                 except ValueError:
-                    timeout_seconds = 300
+                    timeout_seconds = 180
                 app.save_config(
                     {
                         "run_interval_hours": hours,

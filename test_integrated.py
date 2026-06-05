@@ -52,12 +52,13 @@ class IntegratedPageTests(unittest.TestCase):
                     "cookie: sessionid=abc;\n"
                     "  ttwid=def;\n"
                     "  msToken=ghi;\n"
+                    "  random_key=keepme;\n"
                     "naming: '{create}-{nickname}-{aweme_id}'\n"
                 )
             finally:
                 integrated_server.SITE_RULES["douyin"] = old_rule
-            self.assertEqual(result["douyin"]["count"], 3)
-            self.assertEqual(output.read_text(encoding="utf-8").strip(), "sessionid=abc; ttwid=def; msToken=ghi")
+            self.assertEqual(result["douyin"]["count"], 4)
+            self.assertEqual(output.read_text(encoding="utf-8").strip(), "sessionid=abc; ttwid=def; msToken=ghi; random_key=keepme")
 
 
 class DouyinCookieTests(unittest.TestCase):
@@ -66,11 +67,12 @@ class DouyinCookieTests(unittest.TestCase):
             "cookie: sessionid=abc;\n"
             "  ttwid=def;\n"
             "  msToken=ghi;\n"
+            "  random_key=keepme;\n"
             "naming: ignored\n"
         )
-        self.assertEqual(normalized, "sessionid=abc; ttwid=def; msToken=ghi")
+        self.assertEqual(normalized, "sessionid=abc; ttwid=def; msToken=ghi; random_key=keepme")
         summary = cookie_summary(normalized)
-        self.assertEqual(summary["fields"], 3)
+        self.assertEqual(summary["fields"], 4)
         self.assertEqual(summary["missing_required"], [])
 
 
