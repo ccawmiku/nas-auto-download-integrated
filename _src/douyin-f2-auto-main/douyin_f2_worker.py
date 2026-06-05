@@ -181,6 +181,7 @@ SENSITIVE_COOKIE_NAMES = {
     "UIFID_TEMP",
 }
 COOKIE_REQUIRED_NAMES = ("sessionid", "ttwid")
+COOKIE_YAML_PLACEHOLDER = "__DOUYIN_COOKIE_PLACEHOLDER__"
 
 
 @dataclass
@@ -356,6 +357,36 @@ def normalize_cookie_text(text: str) -> str:
         return "; ".join(f"{name}={value}" for name, value in rows)
     pairs = select_douyin_cookie_pairs(parse_cookie_pairs(extract_cookie_block(text)))
     return "; ".join(f"{name}={value}" for name, value in pairs)
+
+
+def render_douyin_cookie_yaml_lines(cookie_text: str) -> list[str]:
+    pairs = parse_cookie_pairs(cookie_text)
+    if not pairs:
+        return ["  cookie:"]
+    lines: list[str] = []
+    for index, (name, value) in enumerate(pairs):
+        prefix = "  cookie: " if index == 0 else "    "
+        lines.append(f"{prefix}{name}={value};")
+    return lines
+
+
+def render_douyin_job_yaml(douyin: dict[str, Any]) -> str:
+    payload = {"douyin": dict(douyin, cookie=COOKIE_YAML_PLACEHOLDER)}
+    rendered = yaml.safe_dump(payload, allow_unicode=True, sort_keys=False, width=100000)
+    placeholder_pattern = re.compile(
+        rf"^  cookie:\s+['\"]?{re.escape(COOKIE_YAML_PLACEHOLDER)}['\"]?\s*$"
+    )
+    output_lines: list[str] = []
+    replaced = False
+    for line in rendered.splitlines():
+        if placeholder_pattern.match(line):
+            output_lines.extend(render_douyin_cookie_yaml_lines(str(douyin.get("cookie") or "")))
+            replaced = True
+            continue
+        output_lines.append(line)
+    if not replaced:
+        raise RuntimeError("未找到抖音 Cookie 占位符，无法生成参考格式 YAML")
+    return "\n".join(output_lines) + "\n"
 
 
 def cookie_summary(cookie_text: str) -> dict[str, Any]:
@@ -624,10 +655,7 @@ class App:
         }
         config_path = Path(str(self.config.get("f2_config_dir") or "/config/douyin/f2")) / f"{job_key(job, index)}.yaml"
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(
-            yaml.safe_dump({"douyin": douyin}, allow_unicode=True, sort_keys=False, width=100000),
-            encoding="utf-8",
-        )
+        config_path.write_text(render_douyin_job_yaml(douyin), encoding="utf-8")
         return config_path
 
     def run_job(self, job: dict[str, Any], index: int) -> RunResult:
@@ -844,7 +872,7 @@ textarea{{min-height:120px;resize:vertical}}
 </div>
 <p class="muted">风险规则：关键字段缺失视为高风险；参考字段未满 {len(DOUYIN_REFERENCE_COOKIE_ORDER)} 项视为有风险；满 {len(DOUYIN_REFERENCE_COOKIE_ORDER)} 项才显示正常。</p>
 <p class="muted" id="cookieMissingRef">缺失参考字段：{html.escape(", ".join(cookie_info["missing_reference"][:16]) + (" ..." if len(cookie_info["missing_reference"]) > 16 else "") if cookie_info["missing_reference"] else "无")}</p>
-<p class="muted">支持直接粘贴 `app.yaml` 里的 `cookie:` 段或单行 Cookie header。保存时会按本地参考 `app.yaml` 的字段和顺序拼接，其他字段会丢弃，并过滤非 ASCII 值；页面和日志都不会显示明文。</p>
+<p class="muted">支持直接粘贴 `app.yaml` 里的 `cookie:` 段或单行 Cookie header。保存时会按本地参考 `app.yaml` 的字段和顺序拼接，其他字段会丢弃，并过滤非 ASCII 值；生成给 f2 的 YAML 会继续按参考 `app.yaml` 的分号换行和缩进输出。页面和日志都不会显示明文。</p>
 <form method="post" action="/cookie">
 <textarea name="cookie_text" placeholder="cookie: sessionid=...; ttwid=..."></textarea>
 <div class="actions"><button type="submit">保存抖音 Cookie</button></div>

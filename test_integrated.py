@@ -5,6 +5,7 @@ import zipfile
 from pathlib import Path
 
 import requests
+import yaml
 from pixivpy3.utils import PixivError
 
 ROOT = Path(__file__).resolve().parent
@@ -13,14 +14,20 @@ sys.path.insert(0, str(ROOT / "_src" / "douyin-f2-auto-main"))
 sys.path.insert(0, str(ROOT / "_src" / "pixiv-auto-download-nas-main"))
 
 import integrated_server
-from douyin_f2_worker import DOUYIN_REFERENCE_COOKIE_ORDER, build_f2_runtime_conf, cookie_summary, normalize_cookie_text
+from douyin_f2_worker import (
+    DOUYIN_REFERENCE_COOKIE_ORDER,
+    build_f2_runtime_conf,
+    cookie_summary,
+    normalize_cookie_text,
+    render_douyin_job_yaml,
+)
 from pixiv_auto_worker import classify_error, safe_extract_zip
 
 
 class IntegratedPageTests(unittest.TestCase):
     def test_home_page_includes_version_and_service_cards(self) -> None:
         body = integrated_server.page().decode("utf-8")
-        self.assertIn("v1.3.2", body)
+        self.assertIn("v1.3.3", body)
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)
@@ -91,6 +98,33 @@ class DouyinCookieTests(unittest.TestCase):
         self.assertEqual(summary["status"], "正常")
         self.assertEqual(summary["risk"], "正常")
         self.assertEqual(summary["missing_reference"], [])
+
+    def test_renders_job_yaml_with_reference_cookie_line_breaks(self) -> None:
+        rendered = render_douyin_job_yaml(
+            {
+                "cookie": "sessionid=abc; ttwid=def",
+                "cover": False,
+                "desc": False,
+                "folderize": True,
+                "interval": "all",
+                "languages": None,
+                "lyric": True,
+                "max_connections": 5,
+                "max_counts": 0,
+                "max_retries": 5,
+                "max_tasks": 10,
+                "mode": "like",
+                "music": None,
+                "naming": "{create}-{nickname}-{aweme_id}",
+                "page_counts": 20,
+                "path": "/F2DL",
+                "timeout": 10,
+                "url": "https://www.douyin.com/user/example?showTab=like",
+            }
+        )
+        self.assertIn("  cookie: sessionid=abc;\n    ttwid=def;\n", rendered)
+        loaded = yaml.safe_load(rendered) or {}
+        self.assertEqual(loaded["douyin"]["cookie"], "sessionid=abc; ttwid=def;")
 
 
 class PixivNetworkTests(unittest.TestCase):
