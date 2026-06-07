@@ -1,13 +1,13 @@
-# NAS Auto Download Integrated v1.4.2-dev
+# NAS Auto Download Integrated v1.4.3-dev
 
 ## 目标
 
-`v1.4.2-dev` 是 `v1.3.6` 之后的开发版，继续做低风险的结构和界面收敛，不改动抖音 f2 Cookie 的核心格式规则。
+`v1.4.3-dev` 是 `v1.3.6` 之后的开发版，继续做低风险的结构和界面收敛，不改动抖音 f2 Cookie 的核心格式规则。
 
 ## 已调整
 
 - `main` 已合入 `v1.3.6`。
-- `dev` 版本号更新为 `v1.4.2-dev`，同步更新：
+- `dev` 版本号更新为 `v1.4.3-dev`，同步更新：
   - `VERSION`
   - `_integrated/Dockerfile`
   - `_integrated/integrated_server.py`
@@ -30,6 +30,12 @@
   - 删除代理注入的“返回统一主页”顶部条。
   - 小红书页面接入共享 UI 样式，与 X、Pixiv、抖音保持统一控件和配色。
   - 共享 CSS 升级输入框、按钮、状态标签、卡片、表格、日志、焦点态和 hover 态。
+- 小红书采集修复和浏览器增强：
+  - 修复统一 Cookie 文件导入跳过 `#HttpOnly_` Netscape 行的问题，避免漏掉小红书关键登录 Cookie。
+  - Cookie 预览新增关键字段缺失提示，小红书会提示 `a1` / `web_session` 是否齐全。
+  - 小红书页面运行间隔输入统一为小时，后端仍兼容秒并保存为秒。
+  - 小红书浏览器采集新增可选 CloakBrowser 后端，默认配置优先使用 CloakBrowser，失败时回退 Playwright。
+  - CloakBrowser 默认使用轻量 humanize、`zh-CN`、`Asia/Shanghai`、固定 viewport 和持久 profile，减少登录状态丢失，同时不默认开启 geoip 等额外下载/高开销能力。
 - 抖音 worker 减少重复写任务 YAML：
   - 增加任务配置签名。
   - 只有 Cookie、任务、默认下载配置等发生变化时才重写 `like.yaml` / `collection.yaml`。

@@ -95,6 +95,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "browser": {
         "enabled": True,
+        "backend": "cloakbrowser",
         "headless": True,
         "user_agent_env": "XHS_USER_AGENT",
         "cookie_env": "XHS_COOKIE",
@@ -107,6 +108,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "target_timeout_ms": 45000,
         "extractor": "/app/liked_extractor.js",
         "auto_install_playwright": True,
+        "cloakbrowser_humanize": True,
+        "cloakbrowser_human_preset": "default",
+        "cloakbrowser_persistent_profile": True,
+        "cloakbrowser_user_data_dir": "/state/xhs/cloakbrowser/profile",
+        "cloakbrowser_stealth_args": True,
+        "cloakbrowser_geoip": False,
+        "locale": "zh-CN",
+        "timezone_id": "Asia/Shanghai",
+        "viewport": {"width": 1440, "height": 1000},
         "playwright_version": "1.56.0",
         "targets": [],
     },
@@ -366,11 +376,22 @@ def save_web_settings(config: dict[str, Any], payload: dict[str, Any]) -> dict[s
 
     interval_changed = False
     duplicate_stop_changed = False
-    if payload.get("run_interval_seconds") not in (None, ""):
+    interval_payload = None
+    interval_unit = "秒"
+    if payload.get("run_interval_hours") not in (None, ""):
+        interval_unit = "小时"
         try:
-            interval = int(payload.get("run_interval_seconds"))
+            interval_payload = int(round(float(payload.get("run_interval_hours")) * 3600))
+        except (TypeError, ValueError) as error:
+            raise ValueError("运行间隔必须是数字小时数") from error
+    elif payload.get("run_interval_seconds") not in (None, ""):
+        try:
+            interval_payload = int(payload.get("run_interval_seconds"))
         except (TypeError, ValueError) as error:
             raise ValueError("运行间隔必须是数字秒数") from error
+
+    if interval_payload is not None:
+        interval = int(interval_payload)
         if interval < 60:
             raise ValueError("运行间隔不能小于 60 秒")
         if interval > 604800:
@@ -399,7 +420,7 @@ def save_web_settings(config: dict[str, Any], payload: dict[str, Any]) -> dict[s
     log("已将网页设置保存到密钥文件。")
     if interval_changed:
         SETTINGS_CHANGED_EVENT.set()
-        log(f"已将运行间隔更新为 {config['run_interval_seconds']} 秒。")
+        log(f"已将运行间隔更新为 {config['run_interval_seconds']} 秒（网页按{interval_unit}保存）。")
     if duplicate_stop_changed:
         log(f"已将连续已下载停止阈值更新为 {config['browser']['consecutive_downloaded_stop_count']} 条。")
     return {
@@ -408,6 +429,7 @@ def save_web_settings(config: dict[str, Any], payload: dict[str, Any]) -> dict[s
         "cookie_summary": cookie_summary(secrets.get("xhs_cookie", "")),
         "user_agent_present": bool(secrets.get("xhs_user_agent", "").strip()),
         "run_interval_seconds": config.get("run_interval_seconds"),
+        "run_interval_hours": round(float(config.get("run_interval_seconds") or 0) / 3600, 3),
         "consecutive_downloaded_stop_count": config.get("browser", {}).get("consecutive_downloaded_stop_count"),
     }
 
@@ -670,6 +692,11 @@ def collect_dashboard_status(config: dict[str, Any], config_path: str) -> dict[s
             "user_agent_present": bool(user_agent_value),
             "user_agent_value": user_agent_value,
             "browser_enabled": browser_config.get("enabled"),
+            "browser_backend": browser_config.get("backend", "playwright"),
+            "browser_human_preset": browser_config.get("cloakbrowser_human_preset", "default"),
+            "browser_persistent_profile": browser_config.get("cloakbrowser_persistent_profile", True),
+            "browser_locale": browser_config.get("locale", "zh-CN"),
+            "browser_timezone": browser_config.get("timezone_id", "Asia/Shanghai"),
             "headless": browser_config.get("headless"),
             "scroll_count": browser_config.get("scroll_count"),
             "consecutive_downloaded_stop_count": browser_config.get("consecutive_downloaded_stop_count"),
@@ -754,8 +781,8 @@ __APP_STYLE__
         <textarea id="cookieInput" rows="5" placeholder="在这里粘贴新的 Cookie；留空保存不会覆盖旧 Cookie"></textarea>
         <label class="muted" for="userAgentInput">User Agent</label>
         <input id="userAgentInput" type="text" placeholder="浏览器 User Agent">
-        <label class="muted" for="intervalInput">运行间隔（秒）</label>
-        <input id="intervalInput" type="number" min="60" step="60" placeholder="例如 1800 表示 30 分钟">
+        <label class="muted" for="intervalInput">运行间隔（小时）</label>
+        <input id="intervalInput" type="number" min="0.02" max="168" step="0.1" placeholder="例如 16.7 表示约 60000 秒">
         <label class="muted" for="duplicateStopInput">连续已下载自动停止（条，0 表示关闭）</label>
         <input id="duplicateStopInput" type="number" min="0" max="1000" step="1" placeholder="例如 10 表示连续 10 条已下载就停止滚动">
         <div class="toolbar formbar">
@@ -819,7 +846,8 @@ __APP_STYLE__
         $("userAgentInput").value = cfg.user_agent_value || "";
       }
       if (document.activeElement !== $("intervalInput")) {
-        $("intervalInput").value = cfg.run_interval_seconds || "";
+        const hours = Number(cfg.run_interval_seconds || 0) / 3600;
+        $("intervalInput").value = hours ? String(Math.round(hours * 100) / 100) : "";
       }
       if (document.activeElement !== $("duplicateStopInput")) {
         $("duplicateStopInput").value = cfg.consecutive_downloaded_stop_count ?? "";
@@ -854,6 +882,9 @@ __APP_STYLE__
         ["数据库", cfg.database],
         ["同步 settings", cfg.settings_sync_enabled ? `开启：${cfg.settings_path}` : "关闭"],
         ["无头浏览器", cfg.browser_enabled ? "开启" : "关闭"],
+        ["浏览器后端", cfg.browser_backend || "playwright"],
+        ["CloakBrowser", `${cfg.browser_persistent_profile ? "持久 profile" : "临时 context"} / ${cfg.browser_human_preset || "default"}`],
+        ["地区指纹", `${cfg.browser_locale || "zh-CN"} / ${cfg.browser_timezone || "Asia/Shanghai"}`],
         ["滚动次数", cfg.scroll_count],
         ["连续已下载自动停止", Number(cfg.consecutive_downloaded_stop_count || 0) > 0 ? `${cfg.consecutive_downloaded_stop_count} 条` : "关闭"],
         ["请求间隔", `${cfg.request_delay_seconds}s + 随机 ${cfg.jitter_seconds}s`],
@@ -906,7 +937,7 @@ __APP_STYLE__
         body: JSON.stringify({
           cookie: $("cookieInput").value,
           user_agent: $("userAgentInput").value,
-          run_interval_seconds: $("intervalInput").value,
+          run_interval_hours: $("intervalInput").value,
           consecutive_downloaded_stop_count: $("duplicateStopInput").value
         })
       });
@@ -1359,14 +1390,98 @@ def load_async_playwright(browser_config: dict[str, Any]) -> Any | None:
         return None
 
 
-async def collect_browser_notes(config: dict[str, Any], conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    browser_config = config.get("browser", {})
-    if not browser_config.get("enabled"):
-        return []
+async def run_with_browser_context(
+    browser_config: dict[str, Any],
+    context_kwargs: dict[str, Any],
+    callback: Any,
+) -> list[dict[str, Any]]:
+    backend = str(browser_config.get("backend") or "playwright").lower()
+    if backend == "cloakbrowser":
+        lock_cm = browser_lock()
+        lock_cm.__enter__()
+        context = None
+        close_target = None
+        try:
+            from cloakbrowser import launch_context_async, launch_persistent_context_async
+
+            viewport = browser_config.get("viewport") or context_kwargs.get("viewport")
+            locale = str(browser_config.get("locale") or context_kwargs.get("locale") or "zh-CN")
+            timezone_id = str(browser_config.get("timezone_id") or context_kwargs.get("timezone_id") or "Asia/Shanghai")
+            user_agent = context_kwargs.get("user_agent")
+            human_preset = str(browser_config.get("cloakbrowser_human_preset") or "default")
+            launch_options: dict[str, Any] = {
+                "headless": bool(browser_config.get("headless", True)),
+                "stealth_args": bool(browser_config.get("cloakbrowser_stealth_args", True)),
+                "locale": locale,
+                "timezone": timezone_id,
+                "geoip": bool(browser_config.get("cloakbrowser_geoip", False)),
+                "humanize": bool(browser_config.get("cloakbrowser_humanize", True)),
+                "human_preset": human_preset,
+                "viewport": viewport,
+                "backend": browser_config.get("cloakbrowser_backend") or None,
+                "color_scheme": browser_config.get("color_scheme") or "light",
+            }
+            if user_agent:
+                launch_options["user_agent"] = user_agent
+            human_config = browser_config.get("cloakbrowser_human_config")
+            if isinstance(human_config, dict):
+                launch_options["human_config"] = human_config
+            if browser_config.get("proxy"):
+                launch_options["proxy"] = browser_config.get("proxy")
+
+            persistent = bool(browser_config.get("cloakbrowser_persistent_profile", True))
+            if persistent:
+                user_data_dir = Path(str(browser_config.get("cloakbrowser_user_data_dir") or "/state/xhs/cloakbrowser/profile"))
+                user_data_dir.mkdir(parents=True, exist_ok=True)
+                log(f"小红书浏览器后端：CloakBrowser（持久 profile，human={human_preset}）")
+                context = await launch_persistent_context_async(
+                    user_data_dir,
+                    **launch_options,
+                )
+                close_target = context
+            else:
+                log(f"小红书浏览器后端：CloakBrowser（临时 context，human={human_preset}）")
+                context = await launch_context_async(
+                    **launch_options,
+                )
+                close_target = context
+        except ImportError as error:
+            log(f"CloakBrowser 导入失败，回退 Playwright：{error}")
+        except Exception as error:
+            log(f"CloakBrowser 启动失败，回退 Playwright：{error}")
+        finally:
+            if context is None:
+                lock_cm.__exit__(*sys.exc_info())
+
+        if context is not None:
+            try:
+                return await callback(context)
+            finally:
+                try:
+                    if close_target is not None:
+                        await close_target.close()
+                finally:
+                    lock_cm.__exit__(*sys.exc_info())
 
     async_playwright = load_async_playwright(browser_config)
     if async_playwright is None:
         log("未安装 Python Playwright，浏览器模式不可用。")
+        return []
+
+    log("小红书浏览器后端：Playwright")
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=bool(browser_config.get("headless", True)))
+        context = await browser.new_context(**context_kwargs)
+        try:
+            return await callback(context)
+        finally:
+            await context.close()
+            await browser.close()
+
+
+async def collect_browser_notes(config: dict[str, Any], conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    browser_config = config.get("browser", {})
+    if not browser_config.get("enabled"):
         return []
 
     user_agent = runtime_value(
@@ -1387,30 +1502,30 @@ async def collect_browser_notes(config: dict[str, Any], conn: sqlite3.Connection
         return []
 
     extractor = load_extractor_script(config)
-    collected: list[dict[str, Any]] = []
-    async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=bool(browser_config.get("headless", True)))
-        context_kwargs: dict[str, Any] = {
-            "viewport": {"width": 1440, "height": 1000},
-            "locale": "zh-CN",
-            "timezone_id": "Asia/Shanghai",
-        }
-        if user_agent:
-            context_kwargs["user_agent"] = user_agent
-        context = await browser.new_context(**context_kwargs)
+    viewport = browser_config.get("viewport")
+    if not isinstance(viewport, dict):
+        viewport = {"width": 1440, "height": 1000}
+    context_kwargs: dict[str, Any] = {
+        "viewport": viewport,
+        "locale": str(browser_config.get("locale") or "zh-CN"),
+        "timezone_id": str(browser_config.get("timezone_id") or "Asia/Shanghai"),
+    }
+    if user_agent:
+        context_kwargs["user_agent"] = user_agent
+
+    async def collect_from_context(context: Any) -> list[dict[str, Any]]:
         if cookie:
             await context.add_cookies(cookie_header_to_playwright(cookie))
         else:
             log("Cookie 为空；采集点赞页通常需要已登录的 Cookie。")
 
-        try:
-            for target in targets:
-                target_notes = await collect_target_notes(context, target, browser_config, config, extractor, conn)
-                collected.extend(target_notes)
-        finally:
-            await context.close()
-            await browser.close()
+        collected: list[dict[str, Any]] = []
+        for target in targets:
+            target_notes = await collect_target_notes(context, target, browser_config, config, extractor, conn)
+            collected.extend(target_notes)
+        return collected
 
+    collected = await run_with_browser_context(browser_config, context_kwargs, collect_from_context)
     return dedupe_notes(collected)
 
 

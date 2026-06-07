@@ -33,7 +33,7 @@ except ModuleNotFoundError:
 PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
 BROWSER_LOCK_PATH = os.environ.get("BROWSER_LOCK_PATH", "/tmp/nas-auto-browser.lock")
-APP_VERSION = os.environ.get("APP_VERSION", "v1.4.2-dev")
+APP_VERSION = os.environ.get("APP_VERSION", "v1.4.3-dev")
 DOUYIN_CONFIG_PATH = Path(os.environ.get("DOUYIN_CONFIG_PATH", "/config/douyin/config.json"))
 DOUYIN_COOKIE_YAML_PLACEHOLDER = "__DOUYIN_COOKIE_PLACEHOLDER__"
 DEFAULT_DOUYIN_CONFIG: dict[str, Any] = {
@@ -80,6 +80,7 @@ SITE_RULES = {
         "output": Path("/config/xhs/xhs_cookie.txt"),
         "domains": {"xiaohongshu.com", ".xiaohongshu.com", "www.xiaohongshu.com", ".www.xiaohongshu.com"},
         "names": {"a1", "web_session", "webId", "gid", "webBuild", "unread", "xsecappid", "loadts", "acw_tc"},
+        "required": {"a1", "web_session"},
     },
     "x": {
         "output": Path("/config/x/x_cookies.txt"),
@@ -97,10 +98,12 @@ SITE_RULES = {
             "d_prefs",
             "night_mode",
         },
+        "required": {"auth_token", "ct0"},
     },
     "douyin": {
         "output": Path("/config/douyin/douyin_cookie.txt"),
         "domains": {"douyin.com", ".douyin.com", "www.douyin.com", ".www.douyin.com"},
+        "required": {"sessionid", "ttwid"},
     },
 }
 
@@ -378,7 +381,11 @@ def start_children() -> None:
         "xhs-worker",
         [sys.executable, "/opt/nas-auto/xhs/xhs_auto_worker.py", "--config", "/config/xhs/config.json"],
         "/opt/nas-auto/xhs",
-        {"XHS_COOKIE_FILE": "/config/xhs/xhs_cookie.txt"},
+        {
+            "XHS_COOKIE_FILE": "/config/xhs/xhs_cookie.txt",
+            "CLOAKBROWSER_CACHE_DIR": "/state/xhs/cloakbrowser",
+            "CLOAKBROWSER_AUTO_UPDATE": "false",
+        },
     )
     start_process(
         "x-worker",
@@ -580,7 +587,9 @@ def parse_netscape_cookies(text: str) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for line in text.splitlines():
         line = line.strip()
-        if not line or line.startswith("#"):
+        if not line:
+            continue
+        if line.startswith("#") and not line.startswith("#HttpOnly_"):
             continue
         parts = line.split("\t")
         if len(parts) < 7:
@@ -663,12 +672,14 @@ def analyze_cookie_import(text: str) -> dict[str, Any]:
         incoming = select_cookie_values(text, key)
         existing = read_existing_cookie_values(key)
         comparison = compare_cookie_values(incoming, existing)
+        required = set(SITE_RULES[key].get("required") or [])
         comparison.update(
             {
                 "key": key,
                 "name": SERVICES[key]["name"],
                 "output": str(SITE_RULES[key]["output"]),
                 "selected": bool(incoming),
+                "missing_required": sorted(required - set(incoming)),
             }
         )
         result[key] = comparison
@@ -874,7 +885,7 @@ function renderPreview(data) {
   }
   box.innerHTML = items.map((item) => `
     <div class="preview-card">
-      <header><h3>${esc(item.name)}</h3><span class="pill ${item.incoming_count ? "ok" : "warn"}">${item.incoming_count ? "可导入" : "未识别"}</span></header>
+      <header><h3>${esc(item.name)}</h3><span class="pill ${item.incoming_count && !(item.missing_required || []).length ? "ok" : "warn"}">${item.incoming_count ? ((item.missing_required || []).length ? "关键字段不足" : "可导入") : "未识别"}</span></header>
       <dl>
         <div><dt>导入文件</dt><dd>${item.incoming_count}</dd></div>
         <div><dt>现有文件</dt><dd>${item.existing_count}</dd></div>
@@ -882,6 +893,7 @@ function renderPreview(data) {
         <div><dt>变化</dt><dd>${item.changed_count}</dd></div>
       </dl>
       <div class="preview-names">导入字段：${compactNames(item.incoming_names)}</div>
+      <div class="preview-names">缺少关键字段：${compactNames(item.missing_required)}</div>
       <div class="preview-names">变化字段：${compactNames(item.changed_names)}</div>
       <div class="preview-names">现有但本次没有：${compactNames(item.removed_names)}</div>
     </div>

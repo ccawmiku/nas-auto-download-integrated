@@ -55,6 +55,7 @@
   },
   "browser": {
     "enabled": true,
+    "backend": "cloakbrowser",
     "headless": true,
     "user_agent_env": "XHS_USER_AGENT",
     "cookie_env": "XHS_COOKIE",
@@ -67,6 +68,18 @@
     "target_timeout_ms": 45000,
     "extractor": "/app/liked_extractor.js",
     "auto_install_playwright": true,
+    "cloakbrowser_humanize": true,
+    "cloakbrowser_human_preset": "default",
+    "cloakbrowser_persistent_profile": true,
+    "cloakbrowser_user_data_dir": "/state/xhs/cloakbrowser/profile",
+    "cloakbrowser_stealth_args": true,
+    "cloakbrowser_geoip": false,
+    "locale": "zh-CN",
+    "timezone_id": "Asia/Shanghai",
+    "viewport": {
+      "width": 1440,
+      "height": 1000
+    },
     "playwright_version": "1.56.0",
     "targets": [
       {

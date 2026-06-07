@@ -1,4 +1,5 @@
 playwright==1.56.0
+cloakbrowser>=0.3.31,<0.4
 requests>=2.31.0
 yt-dlp>=2026.3.17
 pixivpy3>=3.7.5

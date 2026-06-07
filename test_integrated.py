@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "_integrated"))
 sys.path.insert(0, str(ROOT / "_src" / "douyin-f2-auto-main"))
 sys.path.insert(0, str(ROOT / "_src" / "pixiv-auto-download-nas-main"))
+sys.path.insert(0, str(ROOT / "_src" / "XHS-Downloader-NAS-main"))
 
 import integrated_server
 from douyin_f2_worker import (
@@ -23,12 +24,13 @@ from douyin_f2_worker import (
     render_douyin_job_yaml,
 )
 from pixiv_auto_worker import classify_error, safe_extract_zip
+from xhs_auto_worker import save_web_settings
 
 
 class IntegratedPageTests(unittest.TestCase):
     def test_home_page_includes_version_and_service_cards(self) -> None:
         body = integrated_server.page().decode("utf-8")
-        self.assertIn("v1.4.2-dev", body)
+        self.assertIn("v1.4.3-dev", body)
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)
@@ -127,6 +129,33 @@ class IntegratedPageTests(unittest.TestCase):
             self.assertEqual(preview["x"]["added_names"], ["twid"])
             self.assertEqual(preview["x"]["changed_names"], ["auth_token"])
 
+    def test_imports_xhs_httponly_netscape_cookie_rows(self) -> None:
+        old_rule = integrated_server.SITE_RULES["xhs"]
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "xhs_cookie.txt"
+            integrated_server.SITE_RULES["xhs"] = dict(old_rule, output=output)
+            try:
+                result = integrated_server.import_all_cookie(
+                    "# Netscape HTTP Cookie File\n"
+                    "#HttpOnly_.xiaohongshu.com\tTRUE\t/\tTRUE\t1999999999\tweb_session\tws-value\n"
+                    ".xiaohongshu.com\tTRUE\t/\tTRUE\t1999999999\ta1\ta1-value\n"
+                    ".xiaohongshu.com\tTRUE\t/\tTRUE\t1999999999\tunrelated\tignored\n",
+                    targets=["xhs"],
+                )
+            finally:
+                integrated_server.SITE_RULES["xhs"] = old_rule
+            self.assertEqual(result["xhs"]["count"], 2)
+            saved = output.read_text(encoding="utf-8")
+            self.assertIn("a1=a1-value", saved)
+            self.assertIn("web_session=ws-value", saved)
+
+    def test_cookie_preview_reports_missing_required_fields(self) -> None:
+        preview = integrated_server.analyze_cookie_import(
+            ".xiaohongshu.com\tTRUE\t/\tTRUE\t1999999999\ta1\ta1-value\n"
+        )
+        self.assertEqual(preview["xhs"]["incoming_count"], 1)
+        self.assertEqual(preview["xhs"]["missing_required"], ["web_session"])
+
     def test_cookie_import_respects_selected_targets(self) -> None:
         old_x = integrated_server.SITE_RULES["x"]
         old_xhs = integrated_server.SITE_RULES["xhs"]
@@ -221,6 +250,21 @@ class DouyinCookieTests(unittest.TestCase):
         self.assertIn("  cookie: sessionid=abc;\n    ttwid=def\n", rendered)
         loaded = yaml.safe_load(rendered) or {}
         self.assertEqual(loaded["douyin"]["cookie"], "sessionid=abc; ttwid=def")
+
+
+class XhsSettingsTests(unittest.TestCase):
+    def test_web_interval_accepts_hours_and_stores_seconds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            secrets_path = Path(tmp) / "secrets.json"
+            config = {
+                "secrets_path": str(secrets_path),
+                "run_interval_seconds": 1800,
+                "browser": {"consecutive_downloaded_stop_count": 10},
+            }
+            result = save_web_settings(config, {"run_interval_hours": "2.5"})
+            self.assertEqual(result["run_interval_seconds"], 9000)
+            self.assertEqual(config["run_interval_seconds"], 9000)
+            self.assertIn('"run_interval_seconds": "9000"', secrets_path.read_text(encoding="utf-8"))
 
 
 class PixivNetworkTests(unittest.TestCase):

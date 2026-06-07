@@ -25,7 +25,7 @@ docker compose up -d
 默认镜像：
 
 ```text
-ghcr.io/ccawmiku/nas-auto-download-integrated:v1.4.2-dev
+ghcr.io/ccawmiku/nas-auto-download-integrated:v1.4.3-dev
 ```
 
 每次发布都会同步更新 `docker-compose.yml` 里的镜像版本。NAS 端更新时执行 `docker compose pull && docker compose up -d`，避免复用旧镜像 tag。
@@ -67,7 +67,8 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.4.2-dev
 - 首页会显示各子服务是否就绪；子服务启动中时统一首页仍会先打开
 - 首页可以粘贴浏览器插件导出的一整份全站 Cookie header
 - 首页也可以上传 `cookies.txt`，只解析内容，不保存原始上传文件
-- 导入器会自动拆出小红书、X 和抖音所需 Cookie
+- 导入器会自动拆出小红书、X 和抖音所需 Cookie，并支持 Netscape 文件里的 `#HttpOnly_` 行
+- Cookie 预览会提示关键字段缺失；小红书重点看 `a1` 和 `web_session`
 - Pixiv 页面内可以生成登录链接、粘贴 callback/code、换取 refresh-token
 - 抖音页面会显示当前 f2 版本、PyPI 最新版本和检查时间，可手动触发版本检查
 - 抖音页面支持单独粘贴 `app.yaml` 里的 `cookie:` 段并直接保存，不依赖统一首页导入
@@ -77,6 +78,7 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.4.2-dev
 - 抖音页面支持手动停止当前运行中的任务，停止后不会继续后续 job
 - 抖音运行目录会生成本地 `conf/conf.yaml` 并默认关闭 f2 的 Bark 推送，避免未配置 Bark 时额外报 405 噪音
 - 统一首页使用侧边栏切换子页面，子页面不再额外注入返回条
+- 小红书页面运行间隔使用小时输入；采集浏览器默认优先使用 CloakBrowser，启用轻量 humanize、`zh-CN`、`Asia/Shanghai` 和持久 profile，失败会回退 Playwright；CloakBrowser 二进制和 profile 都保存在 `/state/xhs/cloakbrowser`
 
 ## 抖音 f2 迁移
 
