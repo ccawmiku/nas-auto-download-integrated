@@ -28,9 +28,22 @@ from xhs_auto_worker import save_web_settings
 
 
 class IntegratedPageTests(unittest.TestCase):
-    def test_home_page_includes_version_and_service_cards(self) -> None:
+    def test_react_home_page_is_served_when_build_exists(self) -> None:
         body = integrated_server.page().decode("utf-8")
-        self.assertIn("v1.4.3-dev", body)
+        if integrated_server.frontend_static_dir() is not None:
+            self.assertIn('<div id="root"></div>', body)
+            self.assertIn("/assets/", body)
+        else:
+            self.assertIn("v1.5.0-dev", body)
+
+    def test_fallback_home_page_includes_version_and_service_cards(self) -> None:
+        old_reader = integrated_server.read_frontend_index
+        integrated_server.read_frontend_index = lambda: None
+        try:
+            body = integrated_server.page().decode("utf-8")
+        finally:
+            integrated_server.read_frontend_index = old_reader
+        self.assertIn("v1.5.0-dev", body)
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)

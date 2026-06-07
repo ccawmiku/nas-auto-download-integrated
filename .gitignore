@@ -10,3 +10,6 @@ f2库代码参考/
 .tmp-publish-f2-cookie-auto/
 **/__pycache__/
 *.py[cod]
+*.tsbuildinfo
+_frontend/integrated/node_modules/
+_frontend/integrated/dist/

@@ -4,6 +4,7 @@ from __future__ import annotations
 import html
 import http.client
 import json
+import mimetypes
 import os
 import re
 import signal
@@ -32,8 +33,9 @@ except ModuleNotFoundError:
 
 PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
+FRONTEND_STATIC_DIR = Path(os.environ.get("FRONTEND_STATIC_DIR", str(ROOT / "web")))
 BROWSER_LOCK_PATH = os.environ.get("BROWSER_LOCK_PATH", "/tmp/nas-auto-browser.lock")
-APP_VERSION = os.environ.get("APP_VERSION", "v1.4.3-dev")
+APP_VERSION = os.environ.get("APP_VERSION", "v1.5.0-dev")
 DOUYIN_CONFIG_PATH = Path(os.environ.get("DOUYIN_CONFIG_PATH", "/config/douyin/config.json"))
 DOUYIN_COOKIE_YAML_PLACEHOLDER = "__DOUYIN_COOKIE_PLACEHOLDER__"
 DEFAULT_DOUYIN_CONFIG: dict[str, Any] = {
@@ -780,7 +782,64 @@ def service_status() -> dict[str, Any]:
     }
 
 
+def frontend_static_candidates() -> list[Path]:
+    local_dist = Path(__file__).resolve().parents[1] / "_frontend" / "integrated" / "dist"
+    return [FRONTEND_STATIC_DIR, Path(__file__).with_name("web"), local_dist]
+
+
+def frontend_static_dir() -> Path | None:
+    for path in frontend_static_candidates():
+        if (path / "index.html").exists():
+            return path
+    return None
+
+
+def read_frontend_index() -> bytes | None:
+    static_dir = frontend_static_dir()
+    if static_dir is None:
+        return None
+    return (static_dir / "index.html").read_bytes()
+
+
+def resolve_frontend_asset(request_path: str) -> Path | None:
+    static_dir = frontend_static_dir()
+    if static_dir is None:
+        return None
+    relative = request_path.lstrip("/")
+    if not relative or relative == "index.html":
+        relative = "index.html"
+    candidate = (static_dir / relative).resolve()
+    root = static_dir.resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    if not candidate.exists() or not candidate.is_file():
+        return None
+    return candidate
+
+
+def send_frontend_asset(handler: BaseHTTPRequestHandler, request_path: str) -> bool:
+    asset = resolve_frontend_asset(request_path)
+    if asset is None:
+        return False
+    data = asset.read_bytes()
+    content_type = mimetypes.guess_type(str(asset))[0] or "application/octet-stream"
+    handler.send_response(HTTPStatus.OK)
+    handler.send_header("Content-Type", content_type)
+    handler.send_header("Content-Length", str(len(data)))
+    if asset.name != "index.html":
+        handler.send_header("Cache-Control", "public, max-age=31536000, immutable")
+    handler.end_headers()
+    handler.wfile.write(data)
+    return True
+
+
 def page(message: str = "") -> bytes:
+    static_index = read_frontend_index()
+    if static_index is not None and not message:
+        return static_index
+
     nav_items = ""
     service_cards = ""
     ready_count = 0
@@ -1077,6 +1136,9 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
             return
+        if split.path.startswith("/assets/") or split.path in {"/favicon.ico", "/index.html"}:
+            if send_frontend_asset(self, split.path):
+                return
         for key, svc in SERVICES.items():
             if split.path == svc["path"].rstrip("/"):
                 self.send_response(HTTPStatus.FOUND)
@@ -1102,6 +1164,28 @@ class Handler(BaseHTTPRequestHandler):
                 "targets": analyze_cookie_import(str(form.get("text") or "")),
                 "selected": normalize_import_targets(form.get("targets")),
             }
+            data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if split.path == "/api/cookie-import":
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            form = read_import_cookie_form(self, length)
+            targets = normalize_import_targets(form.get("targets"))
+            if not targets:
+                payload = {"ok": False, "message": "未选择要导入的项目，请至少勾选小红书、X 或抖音中的一个。"}
+            else:
+                result = import_all_cookie(str(form.get("text") or ""), targets)
+                payload = {
+                    "ok": True,
+                    "message": "导入完成：" + "；".join(
+                        f"{SERVICES[k]['name']} {v['count']} 项 -> {v['output']}" for k, v in result.items()
+                    ),
+                    "result": result,
+                }
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")

@@ -25,7 +25,7 @@ docker compose up -d
 默认镜像：
 
 ```text
-ghcr.io/ccawmiku/nas-auto-download-integrated:v1.4.3-dev
+ghcr.io/ccawmiku/nas-auto-download-integrated:v1.5.0-dev
 ```
 
 每次发布都会同步更新 `docker-compose.yml` 里的镜像版本。NAS 端更新时执行 `docker compose pull && docker compose up -d`，避免复用旧镜像 tag。
@@ -63,6 +63,7 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.4.3-dev
 
 打开 `http://NAS_IP:14001` 后：
 
+- 统一首页已经重构为 React + shadcn 风格控制台，最终镜像只带静态资源，不需要 Node 运行时
 - 首页可以进入小红书、X、Pixiv、抖音四个管理页面
 - 首页会显示各子服务是否就绪；子服务启动中时统一首页仍会先打开
 - 首页可以粘贴浏览器插件导出的一整份全站 Cookie header
@@ -77,7 +78,7 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.4.3-dev
 - 抖音页面会检查关键字段和参考 `app.yaml` 的 64 个字段，字段不满会直接提示风险
 - 抖音页面支持手动停止当前运行中的任务，停止后不会继续后续 job
 - 抖音运行目录会生成本地 `conf/conf.yaml` 并默认关闭 f2 的 Bark 推送，避免未配置 Bark 时额外报 405 噪音
-- 统一首页使用侧边栏切换子页面，子页面不再额外注入返回条
+- 统一首页使用现代化侧边栏切换子页面，子页面不再额外注入返回条
 - 小红书页面运行间隔使用小时输入；采集浏览器默认优先使用 CloakBrowser，启用轻量 humanize、`zh-CN`、`Asia/Shanghai` 和持久 profile，失败会回退 Playwright；CloakBrowser 二进制和 profile 都保存在 `/state/xhs/cloakbrowser`
 
 ## 抖音 f2 迁移
