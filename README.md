@@ -2,7 +2,7 @@
 
 NAS 自动下载整合 compose，统一管理：
 
-- 小红书点赞自动下载
+- 小红书浏览器脚本提交链接 + Docker 端下载（自动采集默认关闭）
 - X/Twitter Likes 自动下载
 - Pixiv 收藏自动下载
 - 抖音点赞/收藏自动下载（f2）
@@ -25,7 +25,7 @@ docker compose up -d
 默认镜像：
 
 ```text
-ghcr.io/ccawmiku/nas-auto-download-integrated:v1.5.0-dev
+ghcr.io/ccawmiku/nas-auto-download-integrated:v1.5.1-dev
 ```
 
 每次发布都会同步更新 `docker-compose.yml` 里的镜像版本。NAS 端更新时执行 `docker compose pull && docker compose up -d`，避免复用旧镜像 tag。
@@ -70,6 +70,9 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.5.0-dev
 - 首页也可以上传 `cookies.txt`，只解析内容，不保存原始上传文件
 - 导入器会自动拆出小红书、X 和抖音所需 Cookie，并支持 Netscape 文件里的 `#HttpOnly_` 行
 - Cookie 预览会提示关键字段缺失；小红书重点看 `a1` 和 `web_session`
+- 小红书自动运行和无头浏览器采集默认关闭，避免账号风控；运行间隔使用小时输入，默认/最大都是 30 天
+- 小红书浏览器脚本可以把作品链接提交到 `http://NAS_IP:14001/api/xhs/links`，Docker 写入 `/queue/xhs/links.txt` 后才返回确认；网页确认完成后可以直接关闭
+- 小红书第三方下载器 `settings.json` 默认不再同步统一导入或无头浏览器 Cookie，已有旧 `cookie` 字段会在同步 settings 时移除；如后续第三方 API 强制需要 Cookie，应单独配置下载器专用 Cookie
 - Pixiv 页面内可以生成登录链接、粘贴 callback/code、换取 refresh-token
 - 抖音页面会显示当前 f2 版本、PyPI 最新版本和检查时间，可手动触发版本检查
 - 抖音页面支持单独粘贴 `app.yaml` 里的 `cookie:` 段并直接保存，不依赖统一首页导入
@@ -79,7 +82,26 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.5.0-dev
 - 抖音页面支持手动停止当前运行中的任务，停止后不会继续后续 job
 - 抖音运行目录会生成本地 `conf/conf.yaml` 并默认关闭 f2 的 Bark 推送，避免未配置 Bark 时额外报 405 噪音
 - 统一首页使用现代化侧边栏切换子页面，子页面不再额外注入返回条
-- 小红书页面运行间隔使用小时输入；采集浏览器默认优先使用 CloakBrowser，启用轻量 humanize、`zh-CN`、`Asia/Shanghai` 和持久 profile，失败会回退 Playwright；CloakBrowser 二进制和 profile 都保存在 `/state/xhs/cloakbrowser`
+- 手动启用小红书浏览器采集时，后端优先使用 CloakBrowser，启用轻量 humanize、`zh-CN`、`Asia/Shanghai` 和持久 profile，失败会回退 Playwright；CloakBrowser 二进制和 profile 都保存在 `/state/xhs/cloakbrowser`
+
+## 小红书浏览器脚本队列
+
+小红书当前默认不再由 NAS 无头浏览器主动打开账号页面。推荐流程是：
+
+```text
+电脑浏览器 userscript 采集当前作品/页面链接（仓库脚本：tools/userscripts/xhs-docker-queue.user.js）
+  -> POST http://NAS_IP:14001/api/xhs/links
+  -> Docker 写入 /queue/xhs/links.txt 并触发小红书 worker
+  -> worker 调用 xhs-api 下载到 /xhs
+```
+
+接口接受 JSON：
+
+```json
+{"urls":["https://www.xiaohongshu.com/explore/xxx"]}
+```
+
+返回里的 `accepted` 是本次新入队数量，`skipped` 是已经在队列中的数量；只有有效链接完整写入或确认已存在时，浏览器脚本才提示发送完成。
 
 ## 抖音 f2 迁移
 
@@ -101,7 +123,7 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.5.0-dev
 
 ## 浏览器性能保护
 
-小红书和 X 都会使用 Playwright 无头浏览器。整合 worker 容器内置全局浏览器锁：
+手动启用小红书浏览器采集时，小红书和 X 都会使用全局浏览器锁：
 
 - 同一时间只允许一个无头浏览器采集任务运行
 - 另一个任务会等待，默认最长等待 7200 秒

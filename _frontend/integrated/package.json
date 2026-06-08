@@ -1,7 +1,7 @@
 {
   "name": "nas-auto-integrated-ui",
   "private": true,
-  "version": "1.5.0-dev",
+  "version": "1.5.1-dev",
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && vite build",

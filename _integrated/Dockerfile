@@ -10,7 +10,7 @@ RUN npm run build
 
 FROM mcr.microsoft.com/playwright/python:v1.56.0-noble
 
-ARG APP_VERSION=v1.5.0-dev
+ARG APP_VERSION=v1.5.1-dev
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \

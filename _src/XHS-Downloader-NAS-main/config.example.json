@@ -1,6 +1,7 @@
 {
   "api_url": "http://192.168.1.20:13001/xhs/detail",
-  "run_interval_seconds": 1800,
+  "auto_run_enabled": false,
+  "run_interval_seconds": 2592000,
   "request_delay_seconds": 3,
   "jitter_seconds": 2,
   "database": "/state/xhs_auto.sqlite3",
@@ -12,6 +13,7 @@
     "/queue/links.txt"
   ],
   "api_skip": true,
+  "api_cookie_enabled": false,
   "api_cookie_env": "XHS_COOKIE",
   "api_cookie_file": "/config/xhs_cookie.txt",
   "api_cookie_secret_key": "xhs_cookie",
@@ -19,6 +21,8 @@
   "max_download_attempts": 0,
   "sync_settings": {
     "enabled": true,
+    "sync_cookie": false,
+    "sync_user_agent": true,
     "path": "/xhs-volume/settings.json",
     "cookie_env": "XHS_COOKIE",
     "cookie_file": "/config/xhs_cookie.txt",
@@ -54,7 +58,7 @@
     "match": "exact"
   },
   "browser": {
-    "enabled": true,
+    "enabled": false,
     "backend": "cloakbrowser",
     "headless": true,
     "user_agent_env": "XHS_USER_AGENT",

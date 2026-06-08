@@ -69,7 +69,7 @@ type PreviewPayload = {
 };
 
 const serviceMeta: Record<string, { icon: typeof Activity; tone: string; description: string }> = {
-  xhs: { icon: ClipboardCheck, tone: "text-rose-600", description: "点赞页采集、Cookie、浏览器状态" },
+  xhs: { icon: ClipboardCheck, tone: "text-rose-600", description: "浏览器脚本队列、手动触发、Docker 下载" },
   x: { icon: Activity, tone: "text-sky-600", description: "喜欢内容、媒体库、手动下载" },
   pixiv: { icon: ShieldCheck, tone: "text-indigo-600", description: "OAuth、收藏下载、429 保护" },
   douyin: { icon: PlayCircle, tone: "text-orange-600", description: "f2 点赞/收藏、版本检查、任务日志" },
@@ -252,7 +252,7 @@ function App() {
                 </div>
                 <div>
                   <div className="text-lg font-semibold">NAS Auto</div>
-                  <div className="text-xs text-slate-400">{status.version || "v1.5.0-dev"}</div>
+                  <div className="text-xs text-slate-400">{status.version || "v1.5.1-dev"}</div>
                 </div>
               </div>
             </div>
@@ -335,7 +335,7 @@ function App() {
                       </div>
                       <Badge variant="success" className="gap-1">
                         <CheckCircle2 className="h-3.5 w-3.5" />
-                        {status.version || "v1.5.0-dev"}
+                        {status.version || "v1.5.1-dev"}
                       </Badge>
                     </div>
                   </CardHeader>
@@ -638,8 +638,8 @@ function buildServiceStats(
     return [
       { label: "运行中", value: textValue(runtime.is_running), icon: Activity },
       { label: "总作品", value: textValue(db.total_notes), icon: Database },
-      { label: "Cookie", value: textValue(cfg.cookie_present), icon: ShieldCheck },
-      { label: "浏览器", value: textValue(cfg.browser_backend), icon: Server },
+      { label: "自动运行", value: textValue(cfg.auto_run_enabled), icon: ShieldCheck },
+      { label: "浏览器采集", value: textValue(cfg.browser_enabled), icon: Server },
     ];
   }
   if (key === "douyin") {

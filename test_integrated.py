@@ -2,6 +2,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
+import json
 from pathlib import Path
 
 import requests
@@ -24,7 +25,7 @@ from douyin_f2_worker import (
     render_douyin_job_yaml,
 )
 from pixiv_auto_worker import classify_error, safe_extract_zip
-from xhs_auto_worker import save_web_settings
+from xhs_auto_worker import save_web_settings, sync_downloader_settings
 
 
 class IntegratedPageTests(unittest.TestCase):
@@ -34,7 +35,7 @@ class IntegratedPageTests(unittest.TestCase):
             self.assertIn('<div id="root"></div>', body)
             self.assertIn("/assets/", body)
         else:
-            self.assertIn("v1.5.0-dev", body)
+            self.assertIn("v1.5.1-dev", body)
 
     def test_fallback_home_page_includes_version_and_service_cards(self) -> None:
         old_reader = integrated_server.read_frontend_index
@@ -43,7 +44,7 @@ class IntegratedPageTests(unittest.TestCase):
             body = integrated_server.page().decode("utf-8")
         finally:
             integrated_server.read_frontend_index = old_reader
-        self.assertIn("v1.5.0-dev", body)
+        self.assertIn("v1.5.1-dev", body)
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)
@@ -278,6 +279,70 @@ class XhsSettingsTests(unittest.TestCase):
             self.assertEqual(result["run_interval_seconds"], 9000)
             self.assertEqual(config["run_interval_seconds"], 9000)
             self.assertIn('"run_interval_seconds": "9000"', secrets_path.read_text(encoding="utf-8"))
+
+    def test_web_interval_accepts_thirty_days_and_rejects_more(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = {
+                "secrets_path": str(Path(tmp) / "secrets.json"),
+                "run_interval_seconds": 1800,
+                "browser": {},
+            }
+            result = save_web_settings(config, {"run_interval_hours": "720"})
+            self.assertEqual(result["run_interval_seconds"], 2592000)
+            self.assertEqual(config["run_interval_seconds"], 2592000)
+            with self.assertRaisesRegex(ValueError, "30 天"):
+                save_web_settings(config, {"run_interval_hours": "720.1"})
+
+    def test_downloader_settings_removes_cookie_when_cookie_sync_is_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings_path = Path(tmp) / "settings.json"
+            settings_path.write_text(
+                json.dumps({"cookie": "old-cookie", "user_agent": "old-ua"}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            sync_downloader_settings(
+                {
+                    "secrets_path": str(Path(tmp) / "secrets.json"),
+                    "default_user_agent": "",
+                    "sync_settings": {
+                        "enabled": True,
+                        "sync_cookie": False,
+                        "sync_user_agent": False,
+                        "path": str(settings_path),
+                        "defaults": {},
+                    },
+                }
+            )
+            saved = json.loads(settings_path.read_text(encoding="utf-8"))
+            self.assertNotIn("cookie", saved)
+            self.assertEqual(saved["user_agent"], "old-ua")
+
+    def test_xhs_link_queue_accepts_and_deduplicates_browser_submissions(self) -> None:
+        old_queue_file = integrated_server.XHS_QUEUE_FILE
+        with tempfile.TemporaryDirectory() as tmp:
+            integrated_server.XHS_QUEUE_FILE = Path(tmp) / "links.txt"
+            try:
+                url1 = "https://www.xiaohongshu.com/explore/abc123?xsec_token=t1"
+                url2 = "https://www.xiaohongshu.com/discovery/item/def456?xsec_token=t2"
+                urls, invalid = integrated_server.normalize_xhs_link_payload(
+                    {
+                        "urls": [url1, "not-a-url"],
+                        "text": f"extra {url2} and duplicate {url1}",
+                    }
+                )
+                self.assertEqual(urls, [url1, url2])
+                self.assertEqual(invalid, ["not-a-url"])
+
+                first = integrated_server.append_xhs_queue_links(urls)
+                self.assertEqual(first["accepted"], [url1, url2])
+                self.assertEqual(first["skipped"], [])
+                self.assertIn(url1, integrated_server.XHS_QUEUE_FILE.read_text(encoding="utf-8"))
+
+                second = integrated_server.append_xhs_queue_links([url1, url2])
+                self.assertEqual(second["accepted"], [])
+                self.assertEqual(second["skipped"], [url1, url2])
+            finally:
+                integrated_server.XHS_QUEUE_FILE = old_queue_file
 
 
 class PixivNetworkTests(unittest.TestCase):

@@ -42,7 +42,8 @@ NOTE_ID_PATTERNS = (
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "api_url": "http://192.168.1.20:13001/xhs/detail",
-    "run_interval_seconds": 1800,
+    "auto_run_enabled": False,
+    "run_interval_seconds": 2592000,
     "request_delay_seconds": 3,
     "jitter_seconds": 2,
     "database": "/state/xhs_auto.sqlite3",
@@ -52,6 +53,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "legacy_processed_json": "/state/processed.json",
     "queue_files": ["/queue/links.txt"],
     "api_skip": True,
+    "api_cookie_enabled": False,
     "api_cookie_env": "XHS_COOKIE",
     "api_cookie_file": "/config/xhs_cookie.txt",
     "api_cookie_secret_key": "xhs_cookie",
@@ -59,6 +61,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "max_download_attempts": 0,
     "sync_settings": {
         "enabled": True,
+        "sync_cookie": False,
+        "sync_user_agent": True,
         "path": "/xhs-volume/settings.json",
         "cookie_env": "XHS_COOKIE",
         "cookie_file": "/config/xhs_cookie.txt",
@@ -94,7 +98,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "match": "exact",
     },
     "browser": {
-        "enabled": True,
+        "enabled": False,
         "backend": "cloakbrowser",
         "headless": True,
         "user_agent_env": "XHS_USER_AGENT",
@@ -133,6 +137,7 @@ RUNTIME_LOCK = Lock()
 RUN_NOW_EVENT = Event()
 SETTINGS_CHANGED_EVENT = Event()
 LOG_LINES: deque[str] = deque(maxlen=300)
+MAX_RUN_INTERVAL_SECONDS = 30 * 24 * 3600
 RUNTIME: dict[str, Any] = {
     "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     "is_running": False,
@@ -234,7 +239,7 @@ def apply_saved_runtime_settings(config: dict[str, Any]) -> None:
     interval = secrets.get("run_interval_seconds")
     if interval:
         try:
-            config["run_interval_seconds"] = max(60, int(interval))
+            config["run_interval_seconds"] = min(MAX_RUN_INTERVAL_SECONDS, max(60, int(interval)))
         except ValueError:
             log(f"已忽略无效的运行间隔设置：{interval}")
     duplicate_stop_count = secrets.get("consecutive_downloaded_stop_count")
@@ -394,8 +399,8 @@ def save_web_settings(config: dict[str, Any], payload: dict[str, Any]) -> dict[s
         interval = int(interval_payload)
         if interval < 60:
             raise ValueError("运行间隔不能小于 60 秒")
-        if interval > 604800:
-            raise ValueError("运行间隔不能超过 7 天")
+        if interval > MAX_RUN_INTERVAL_SECONDS:
+            raise ValueError("运行间隔不能超过 30 天")
         secrets["run_interval_seconds"] = str(interval)
         if int(config.get("run_interval_seconds", 0) or 0) != interval:
             config["run_interval_seconds"] = interval
@@ -488,26 +493,33 @@ def sync_downloader_settings(config: dict[str, Any]) -> None:
                 settings[key] = value
                 changed = True
 
-    cookie = runtime_value(
-        config,
-        sync_config.get("cookie_secret_key", "xhs_cookie"),
-        sync_config.get("cookie_env", "XHS_COOKIE"),
-        file_path=str(sync_config.get("cookie_file") or config.get("cookie_file", "")),
-    )
-    cookie = normalize_cookie_text(cookie)
+    sync_cookie = bool(sync_config.get("sync_cookie", False))
+    sync_user_agent = bool(sync_config.get("sync_user_agent", True))
+    cookie = ""
+    if sync_cookie:
+        cookie = runtime_value(
+            config,
+            sync_config.get("cookie_secret_key", "xhs_cookie"),
+            sync_config.get("cookie_env", "XHS_COOKIE"),
+            file_path=str(sync_config.get("cookie_file") or config.get("cookie_file", "")),
+        )
+        cookie = normalize_cookie_text(cookie)
+    elif "cookie" in settings:
+        settings.pop("cookie", None)
+        changed = True
     user_agent = runtime_value(
         config,
         sync_config.get("user_agent_secret_key", "xhs_user_agent"),
         sync_config.get("user_agent_env", "XHS_USER_AGENT"),
         str(config.get("default_user_agent", "")),
     )
-    if not cookie and not user_agent and not changed:
+    if not cookie and not (sync_user_agent and user_agent) and not changed:
         log("Cookie 和 User Agent 均为空，跳过设置同步。")
         return
     if cookie and settings.get("cookie") != cookie:
         settings["cookie"] = cookie
         changed = True
-    if user_agent and settings.get("user_agent") != user_agent:
+    if sync_user_agent and user_agent and settings.get("user_agent") != user_agent:
         settings["user_agent"] = user_agent
         changed = True
 
@@ -518,7 +530,7 @@ def sync_downloader_settings(config: dict[str, Any]) -> None:
         json.dumps(settings, ensure_ascii=False, indent=4),
         encoding="utf-8",
     )
-    log(f"已同步 XHS_COOKIE/XHS_USER_AGENT 到 {settings_path}")
+    log(f"已同步小红书下载器 settings 到 {settings_path}（Cookie 同步：{'开启' if sync_cookie else '关闭'}）")
 
 
 def start_dashboard_server(config: dict[str, Any], config_path: str) -> None:
@@ -681,6 +693,8 @@ def collect_dashboard_status(config: dict[str, Any], config_path: str) -> dict[s
         "config": {
             "config_path": config_path,
             "api_url": config.get("api_url"),
+            "auto_run_enabled": config.get("auto_run_enabled"),
+            "api_cookie_enabled": config.get("api_cookie_enabled"),
             "database": db_path,
             "run_interval_seconds": config.get("run_interval_seconds"),
             "request_delay_seconds": config.get("request_delay_seconds"),
@@ -701,6 +715,7 @@ def collect_dashboard_status(config: dict[str, Any], config_path: str) -> dict[s
             "scroll_count": browser_config.get("scroll_count"),
             "consecutive_downloaded_stop_count": browser_config.get("consecutive_downloaded_stop_count"),
             "settings_sync_enabled": sync_config.get("enabled"),
+            "settings_sync_cookie": sync_config.get("sync_cookie", False),
             "settings_path": sync_config.get("path"),
             "targets": [
                 {
@@ -782,7 +797,7 @@ __APP_STYLE__
         <label class="muted" for="userAgentInput">User Agent</label>
         <input id="userAgentInput" type="text" placeholder="浏览器 User Agent">
         <label class="muted" for="intervalInput">运行间隔（小时）</label>
-        <input id="intervalInput" type="number" min="0.02" max="168" step="0.1" placeholder="例如 16.7 表示约 60000 秒">
+        <input id="intervalInput" type="number" min="0.02" max="720" step="0.1" placeholder="例如 720 表示 30 天">
         <label class="muted" for="duplicateStopInput">连续已下载自动停止（条，0 表示关闭）</label>
         <input id="duplicateStopInput" type="number" min="0" max="1000" step="1" placeholder="例如 10 表示连续 10 条已下载就停止滚动">
         <div class="toolbar formbar">
@@ -881,6 +896,9 @@ __APP_STYLE__
         ["配置文件", cfg.config_path],
         ["数据库", cfg.database],
         ["同步 settings", cfg.settings_sync_enabled ? `开启：${cfg.settings_path}` : "关闭"],
+        ["同步下载器 Cookie", cfg.settings_sync_cookie ? "开启" : "关闭"],
+        ["自动运行", cfg.auto_run_enabled ? "开启" : "关闭"],
+        ["下载请求 Cookie", cfg.api_cookie_enabled ? "开启" : "关闭"],
         ["无头浏览器", cfg.browser_enabled ? "开启" : "关闭"],
         ["浏览器后端", cfg.browser_backend || "playwright"],
         ["CloakBrowser", `${cfg.browser_persistent_profile ? "持久 profile" : "临时 context"} / ${cfg.browser_human_preset || "default"}`],
@@ -1765,12 +1783,14 @@ async def run_once(config: dict[str, Any]) -> None:
 
         api_url = str(config.get("api_url", DEFAULT_CONFIG["api_url"]))
         api_skip = bool(config.get("api_skip", True))
-        api_cookie = runtime_cookie_value(
-            config,
-            str(config.get("api_cookie_secret_key", "xhs_cookie")),
-            str(config.get("api_cookie_env", "XHS_COOKIE")),
-            str(config.get("api_cookie_file") or config.get("cookie_file", "")),
-        ) or None
+        api_cookie = None
+        if bool(config.get("api_cookie_enabled", False)):
+            api_cookie = runtime_cookie_value(
+                config,
+                str(config.get("api_cookie_secret_key", "xhs_cookie")),
+                str(config.get("api_cookie_env", "XHS_COOKIE")),
+                str(config.get("api_cookie_file") or config.get("cookie_file", "")),
+            ) or None
         delay = float(config.get("request_delay_seconds", 3))
         jitter = float(config.get("jitter_seconds", 2))
 
@@ -1843,29 +1863,48 @@ async def main() -> int:
     if not args.once:
         start_dashboard_server(config, args.config)
     while True:
-        await run_once(config)
         if args.once:
+            await run_once(config)
             return 0
+        auto_run_enabled = bool(config.get("auto_run_enabled", False))
         interval = int(config.get("run_interval_seconds", 1800))
-        next_run_ts = time.time() + interval
+        next_run_ts = time.time() + interval if auto_run_enabled else None
         with RUNTIME_LOCK:
-            RUNTIME["next_run_at"] = datetime.fromtimestamp(next_run_ts, timezone.utc).isoformat(timespec="seconds")
-        log(f"休眠 {interval} 秒，等待下次运行。")
+            RUNTIME["next_run_at"] = (
+                datetime.fromtimestamp(next_run_ts, timezone.utc).isoformat(timespec="seconds")
+                if next_run_ts is not None
+                else None
+            )
+        if auto_run_enabled:
+            log(f"自动运行已启用，休眠 {interval} 秒，等待下次运行。")
+        else:
+            log("小红书自动运行已关闭，等待手动运行或浏览器脚本提交链接。")
         while True:
-            remaining = next_run_ts - time.time()
-            if remaining <= 0:
+            remaining = (next_run_ts - time.time()) if next_run_ts is not None else None
+            if remaining is not None and remaining <= 0:
+                log("到达自动运行时间，开始执行。")
                 break
-            if RUN_NOW_EVENT.wait(timeout=min(remaining, 5)):
+            wait_timeout = min(remaining, 5) if remaining is not None else 5
+            if RUN_NOW_EVENT.wait(timeout=wait_timeout):
                 RUN_NOW_EVENT.clear()
                 log("开始执行手动运行。")
                 break
             if SETTINGS_CHANGED_EVENT.is_set():
                 SETTINGS_CHANGED_EVENT.clear()
+                auto_run_enabled = bool(config.get("auto_run_enabled", False))
                 interval = int(config.get("run_interval_seconds", 1800))
-                next_run_ts = time.time() + interval
+                next_run_ts = time.time() + interval if auto_run_enabled else None
                 with RUNTIME_LOCK:
-                    RUNTIME["next_run_at"] = datetime.fromtimestamp(next_run_ts, timezone.utc).isoformat(timespec="seconds")
-                log(f"运行间隔已变化，已按 {interval} 秒重新安排下次运行。")
+                    RUNTIME["next_run_at"] = (
+                        datetime.fromtimestamp(next_run_ts, timezone.utc).isoformat(timespec="seconds")
+                        if next_run_ts is not None
+                        else None
+                    )
+                if auto_run_enabled:
+                    log(f"运行间隔已变化，已按 {interval} 秒重新安排下次运行。")
+                else:
+                    log("自动运行已关闭，取消下次自动运行时间。")
+        await run_once(config)
 
 
 if __name__ == "__main__":

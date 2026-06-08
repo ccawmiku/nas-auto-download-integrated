@@ -35,7 +35,8 @@ PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
 FRONTEND_STATIC_DIR = Path(os.environ.get("FRONTEND_STATIC_DIR", str(ROOT / "web")))
 BROWSER_LOCK_PATH = os.environ.get("BROWSER_LOCK_PATH", "/tmp/nas-auto-browser.lock")
-APP_VERSION = os.environ.get("APP_VERSION", "v1.5.0-dev")
+APP_VERSION = os.environ.get("APP_VERSION", "v1.5.1-dev")
+XHS_QUEUE_FILE = Path(os.environ.get("XHS_QUEUE_FILE", "/queue/xhs/links.txt"))
 DOUYIN_CONFIG_PATH = Path(os.environ.get("DOUYIN_CONFIG_PATH", "/config/douyin/config.json"))
 DOUYIN_COOKIE_YAML_PLACEHOLDER = "__DOUYIN_COOKIE_PLACEHOLDER__"
 DEFAULT_DOUYIN_CONFIG: dict[str, Any] = {
@@ -216,11 +217,16 @@ DOUYIN_REFERENCE_COOKIE_NAMES = set(DOUYIN_REFERENCE_COOKIE_ORDER)
 
 COOKIE_LINE_RE = re.compile(r"^\s*cookie\s*:\s*", re.IGNORECASE)
 YAML_KEY_RE = re.compile(r"^\s*[A-Za-z0-9_-]+\s*:\s*")
+XHS_NOTE_URL_RE = re.compile(
+    r"https?://(?:www\.)?(?:xiaohongshu\.com|xhslink\.com)/[^\s\"'<>]+",
+    re.IGNORECASE,
+)
 
 
 processes: list[tuple[str, subprocess.Popen]] = []
 log_lines: list[str] = []
 log_lock = threading.Lock()
+xhs_queue_lock = threading.Lock()
 
 
 def log(message: str) -> None:
@@ -270,13 +276,22 @@ def ensure_configs() -> None:
         {
             "api_url": os.environ.get("XHS_API_URL", "http://xhs-api:5556/xhs/detail"),
             "database": "/state/xhs/xhs_auto.sqlite3",
+            "auto_run_enabled": os.environ.get("XHS_AUTO_RUN_ENABLED", "false").lower() in {"1", "true", "yes", "on"},
             "secrets_path": "/state/xhs/secrets.json",
             "cookie_file": "/config/xhs/xhs_cookie.txt",
             "api_cookie_file": "/config/xhs/xhs_cookie.txt",
+            "api_cookie_enabled": os.environ.get("XHS_API_COOKIE_ENABLED", "false").lower() in {"1", "true", "yes", "on"},
             "queue_files": ["/queue/xhs/links.txt"],
             "web": {"host": "127.0.0.1", "port": 18081},
-            "sync_settings": {"path": "/xhs-volume/settings.json", "cookie_file": "/config/xhs/xhs_cookie.txt"},
-            "browser": {"cookie_file": "/config/xhs/xhs_cookie.txt"},
+            "sync_settings": {
+                "path": "/xhs-volume/settings.json",
+                "cookie_file": "/config/xhs/xhs_cookie.txt",
+                "sync_cookie": os.environ.get("XHS_SYNC_DOWNLOADER_COOKIE", "false").lower() in {"1", "true", "yes", "on"},
+            },
+            "browser": {
+                "enabled": os.environ.get("XHS_BROWSER_ENABLED", "false").lower() in {"1", "true", "yes", "on"},
+                "cookie_file": "/config/xhs/xhs_cookie.txt",
+            },
         },
     )
     ensure_config(
@@ -782,6 +797,83 @@ def service_status() -> dict[str, Any]:
     }
 
 
+def dedupe_ordered(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def extract_xhs_urls_from_text(text: str) -> list[str]:
+    urls: list[str] = []
+    for match in XHS_NOTE_URL_RE.finditer(str(text or "")):
+        urls.append(match.group(0).strip().rstrip("),.;，。；"))
+    return dedupe_ordered(urls)
+
+
+def normalize_xhs_link_payload(payload: dict[str, Any]) -> tuple[list[str], list[str]]:
+    candidates: list[str] = []
+    if isinstance(payload.get("urls"), list):
+        candidates.extend(str(item) for item in payload["urls"])
+    if payload.get("url"):
+        candidates.append(str(payload["url"]))
+    if payload.get("text"):
+        candidates.extend(extract_xhs_urls_from_text(str(payload["text"])))
+
+    urls: list[str] = []
+    invalid: list[str] = []
+    for raw in candidates:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        found = extract_xhs_urls_from_text(value)
+        if found:
+            urls.extend(found)
+        else:
+            invalid.append(value[:200])
+    return dedupe_ordered(urls), invalid
+
+
+def append_xhs_queue_links(urls: list[str]) -> dict[str, Any]:
+    XHS_QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with xhs_queue_lock:
+        existing: set[str] = set()
+        if XHS_QUEUE_FILE.exists():
+            try:
+                existing.update(extract_xhs_urls_from_text(XHS_QUEUE_FILE.read_text(encoding="utf-8-sig")))
+            except OSError:
+                existing = set()
+        accepted = [url for url in urls if url not in existing]
+        if accepted:
+            with XHS_QUEUE_FILE.open("a", encoding="utf-8") as handle:
+                if XHS_QUEUE_FILE.stat().st_size > 0:
+                    handle.write("\n")
+                handle.write("\n".join(accepted))
+                handle.write("\n")
+        return {
+            "accepted": accepted,
+            "skipped": [url for url in urls if url in existing],
+            "queue_file": str(XHS_QUEUE_FILE),
+        }
+
+
+def trigger_xhs_worker_run() -> dict[str, Any]:
+    svc = SERVICES["xhs"]
+    conn = http.client.HTTPConnection("127.0.0.1", int(svc["port"]), timeout=10)
+    try:
+        conn.request("POST", "/api/run-now", body=b"{}", headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        body = resp.read().decode("utf-8", errors="replace")
+        return {"ok": 200 <= resp.status < 300, "status": resp.status, "body": body[:500]}
+    except (OSError, TimeoutError, http.client.HTTPException) as error:
+        return {"ok": False, "status": 0, "body": str(error)}
+    finally:
+        conn.close()
+
+
 def frontend_static_candidates() -> list[Path]:
     local_dist = Path(__file__).resolve().parents[1] / "_frontend" / "integrated" / "dist"
     return [FRONTEND_STATIC_DIR, Path(__file__).with_name("web"), local_dist]
@@ -1126,15 +1218,28 @@ def proxy(handler: BaseHTTPRequestHandler, service_key: str, prefix: str) -> Non
 
 
 class Handler(BaseHTTPRequestHandler):
+    def send_json_payload(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_OPTIONS(self) -> None:
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
     def do_GET(self) -> None:
         split = urlsplit(self.path)
         if split.path == "/api/status":
-            data = json.dumps(service_status(), ensure_ascii=False).encode("utf-8")
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
+            self.send_json_payload(service_status())
             return
         if split.path.startswith("/assets/") or split.path in {"/favicon.ico", "/index.html"}:
             if send_frontend_asset(self, split.path):
@@ -1164,12 +1269,7 @@ class Handler(BaseHTTPRequestHandler):
                 "targets": analyze_cookie_import(str(form.get("text") or "")),
                 "selected": normalize_import_targets(form.get("targets")),
             }
-            data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
+            self.send_json_payload(payload)
             return
         if split.path == "/api/cookie-import":
             length = int(self.headers.get("Content-Length", "0") or 0)
@@ -1186,12 +1286,47 @@ class Handler(BaseHTTPRequestHandler):
                     ),
                     "result": result,
                 }
-            data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
+            self.send_json_payload(payload)
+            return
+        if split.path == "/api/xhs/links":
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            if length > 500000:
+                self.send_json_payload({"ok": False, "error": "请求体过大"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+                return
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            except json.JSONDecodeError as error:
+                self.send_json_payload({"ok": False, "error": f"JSON 解析失败：{error}"}, HTTPStatus.BAD_REQUEST)
+                return
+            if not isinstance(payload, dict):
+                self.send_json_payload({"ok": False, "error": "请求体必须是 JSON 对象"}, HTTPStatus.BAD_REQUEST)
+                return
+            urls, invalid = normalize_xhs_link_payload(payload)
+            queue_result = append_xhs_queue_links(urls)
+            trigger_result = trigger_xhs_worker_run() if urls else {"ok": False, "status": 0, "body": "没有有效链接"}
+            accepted = queue_result["accepted"]
+            skipped = queue_result["skipped"]
+            ok = bool(urls) and not invalid and len(urls) == len(accepted) + len(skipped)
+            result = {
+                "ok": ok,
+                "submitted": len(urls) + len(invalid),
+                "valid": len(urls),
+                "accepted": len(accepted),
+                "skipped": len(skipped),
+                "invalid": invalid,
+                "queue_file": queue_result["queue_file"],
+                "triggered": trigger_result,
+                "message": (
+                    f"已确认接收 {len(accepted)} 条新链接，{len(skipped)} 条已在队列中。"
+                    if ok
+                    else "存在无效链接或未识别到有效小红书链接。"
+                ),
+            }
+            log(
+                f"浏览器脚本提交小红书链接：valid={len(urls)} accepted={len(accepted)} "
+                f"skipped={len(skipped)} invalid={len(invalid)} trigger={trigger_result.get('ok')}"
+            )
+            self.send_json_payload(result)
             return
         if split.path == "/import-cookies":
             length = int(self.headers.get("Content-Length", "0") or 0)
