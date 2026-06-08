@@ -2,7 +2,7 @@ version: "3.9"
 
 services:
   xhs-api:
-    image: joeanamier/xhs-downloader
+    image: ghcr.io/joeanamier/xhs-downloader:2.7
     container_name: xhs-api
     ports:
       - "13001:5556"
