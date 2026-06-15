@@ -25,13 +25,18 @@ from douyin_f2_worker import (
     render_douyin_job_yaml,
 )
 from pixiv_auto_worker import classify_error, safe_extract_zip
-from xhs_auto_worker import cookie_summary_from_settings, save_settings_cookie, sync_downloader_settings
+from xhs_auto_worker import (
+    cookie_summary_from_settings,
+    save_settings_cookie,
+    sync_downloader_settings,
+    xhs_api_segment_has_failure,
+)
 
 
 class IntegratedPageTests(unittest.TestCase):
     def test_home_page_includes_version_and_service_cards(self) -> None:
         body = integrated_server.page().decode("utf-8")
-        self.assertIn("v1.6.1-dev", body)
+        self.assertIn("v1.6.2-dev", body)
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)
@@ -240,6 +245,7 @@ class XhsSettingsTests(unittest.TestCase):
             )
             config = {
                 "settings_path": str(settings_path),
+                "image_format": "AUTO",
                 "sync_settings": {"path": str(settings_path), "defaults": {"work_path": "/xhs"}},
             }
             saved = sync_downloader_settings(config)
@@ -247,6 +253,7 @@ class XhsSettingsTests(unittest.TestCase):
             self.assertEqual(saved["custom"], "keep")
             self.assertEqual(saved["work_path"], "/xhs")
             self.assertTrue(saved["folder_mode"])
+            self.assertEqual(saved["image_format"], "AUTO")
 
     def test_saves_xhs_downloader_cookie_to_settings_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -258,6 +265,10 @@ class XhsSettingsTests(unittest.TestCase):
             summary = cookie_summary_from_settings(config)
             self.assertTrue(summary["present"])
             self.assertEqual(summary["missing_required"], [])
+
+    def test_detects_xhs_api_internal_download_failures(self) -> None:
+        self.assertTrue(xhs_api_segment_has_failure("网络异常，作品 下载失败，错误信息: HTTPStatusError('400')"))
+        self.assertFalse(xhs_api_segment_has_failure("作品处理完成：69eddca4000000001f004e2d"))
 
     def test_xhs_link_queue_accepts_and_deduplicates_browser_submissions(self) -> None:
         old_queue_file = integrated_server.XHS_QUEUE_FILE

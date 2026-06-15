@@ -33,7 +33,7 @@ except ModuleNotFoundError:
 PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
 BROWSER_LOCK_PATH = os.environ.get("BROWSER_LOCK_PATH", "/tmp/nas-auto-browser.lock")
-APP_VERSION = os.environ.get("APP_VERSION", "v1.6.1-dev")
+APP_VERSION = os.environ.get("APP_VERSION", "v1.6.2-dev")
 XHS_QUEUE_FILE = Path(os.environ.get("XHS_QUEUE_FILE", "/queue/xhs/links.txt"))
 DOUYIN_CONFIG_PATH = Path(os.environ.get("DOUYIN_CONFIG_PATH", "/config/douyin/config.json"))
 DOUYIN_COOKIE_YAML_PLACEHOLDER = "__DOUYIN_COOKIE_PLACEHOLDER__"
@@ -271,6 +271,7 @@ def ensure_configs() -> None:
             "queue_files": ["/queue/xhs/links.txt"],
             "settings_path": "/xhs-volume/settings.json",
             "xhs_api_log_file": "/xhs-volume/xhs-api.log",
+            "image_format": os.environ.get("XHS_IMAGE_FORMAT", "AUTO"),
             "request_delay_seconds": int(os.environ.get("XHS_REQUEST_DELAY_SECONDS", "0")),
             "jitter_seconds": int(os.environ.get("XHS_JITTER_SECONDS", "0")),
             "max_items_per_run": int(os.environ.get("XHS_MAX_ITEMS_PER_RUN", "0") or "0"),

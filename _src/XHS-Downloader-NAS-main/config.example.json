@@ -6,6 +6,7 @@
   ],
   "settings_path": "/xhs-volume/settings.json",
   "xhs_api_log_file": "/xhs-volume/xhs-api.log",
+  "image_format": "AUTO",
   "request_delay_seconds": 0,
   "jitter_seconds": 0,
   "retry_failed": true,
@@ -22,7 +23,7 @@
       "image_download": true,
       "video_download": true,
       "live_download": true,
-      "image_format": "PNG",
+      "image_format": "AUTO",
       "name_format": "发布时间 作者昵称 作品标题"
     }
   },

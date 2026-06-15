@@ -41,6 +41,13 @@ NOTE_URL_RE = re.compile(
     re.IGNORECASE,
 )
 NOTE_ID_RE = re.compile(r"/(?:discovery/)?item/([0-9a-fA-F]{16,32})")
+XHS_API_FAILURE_MARKERS = (
+    "下载失败",
+    "网络异常",
+    "HTTPStatusError",
+    "Traceback",
+    "Exception",
+)
 
 DEFAULT_DOWNLOADER_SETTINGS: dict[str, Any] = {
     "mapping_data": {},
@@ -54,7 +61,7 @@ DEFAULT_DOWNLOADER_SETTINGS: dict[str, Any] = {
     "image_download": True,
     "video_download": True,
     "live_download": True,
-    "image_format": "PNG",
+    "image_format": "AUTO",
     "proxy": None,
     "timeout": 10,
     "chunk": 2097152,
@@ -72,6 +79,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "queue_files": ["/queue/links.txt"],
     "settings_path": "/xhs-volume/settings.json",
     "xhs_api_log_file": "/xhs-volume/xhs-api.log",
+    "image_format": "AUTO",
     "request_delay_seconds": 0,
     "jitter_seconds": 0,
     "retry_failed": True,
@@ -182,6 +190,9 @@ def sync_downloader_settings(config: dict[str, Any]) -> dict[str, Any]:
     sync = config.get("sync_settings") or {}
     defaults = deep_merge(DEFAULT_DOWNLOADER_SETTINGS, sync.get("defaults") or {})
     merged = deep_merge(defaults, existing)
+    image_format = str(config.get("image_format") or "").strip().upper()
+    if image_format:
+        merged["image_format"] = image_format
     write_json(path, merged)
     return merged
 
@@ -228,6 +239,31 @@ def tail_file(path: Path, max_lines: int = 1000) -> list[str]:
         return [line.rstrip("\n") for line in lines[-max_lines:]]
     except OSError as error:
         return [f"读取日志失败：{error}"]
+
+
+def file_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def read_file_since(path: Path, offset: int, max_bytes: int = 120000) -> str:
+    try:
+        size = path.stat().st_size
+        if size <= offset:
+            return ""
+        start = max(offset, size - max_bytes)
+        with path.open("rb") as handle:
+            handle.seek(start)
+            data = handle.read(size - start)
+        return data.decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def xhs_api_segment_has_failure(text: str) -> bool:
+    return any(marker in str(text or "") for marker in XHS_API_FAILURE_MARKERS)
 
 
 @dataclass
@@ -489,15 +525,21 @@ class App:
             api_url = str(self.config.get("api_url") or DEFAULT_CONFIG["api_url"])
             timeout = int(self.config.get("api_timeout_seconds", 120) or 120)
             skip = bool(self.config.get("api_skip_existing", True))
+            xhs_api_log_path = Path(str(self.config.get("xhs_api_log_file") or "/xhs-volume/xhs-api.log"))
             for index, row in enumerate(pending, start=1):
                 url = str(row["url"])
                 note_id = str(row["note_id"])
                 self.set_progress({"current_url": url, "done": index - 1})
                 self.log.write(f"提交小红书下载 [{index}/{len(pending)}] {note_id}: {url}")
+                api_log_offset = file_size(xhs_api_log_path)
                 try:
                     ok, detail = post_download(api_url, url, skip=skip, timeout=timeout)
                 except Exception as error:
                     ok, detail = False, str(error)
+                api_log_segment = read_file_since(xhs_api_log_path, api_log_offset)
+                if ok and xhs_api_segment_has_failure(api_log_segment):
+                    ok = False
+                    detail = (api_log_segment.strip() or detail)[-2000:]
                 if ok:
                     stats["downloaded"] += 1
                     self.store.mark_downloaded(note_id)
@@ -559,6 +601,11 @@ def html_page(app: App) -> str:
     delay_value = html.escape(str(app.config.get("request_delay_seconds", 0)))
     jitter_value = html.escape(str(app.config.get("jitter_seconds", 0)))
     max_items_value = html.escape(str(app.config.get("max_items_per_run", 0)))
+    image_format_value = str(app.config.get("image_format") or "AUTO").upper()
+    image_options = "".join(
+        f'<option value="{value}"{" selected" if value == image_format_value else ""}>{value}</option>'
+        for value in ("AUTO", "JPEG", "WEBP", "PNG", "HEIC")
+    )
     style = app_css(
         """
 .split{display:grid;grid-template-columns:1fr 1fr;gap:16px}
@@ -608,8 +655,9 @@ pre{max-height:680px}
           <div><label>两条之间基础间隔（秒）</label><input name="request_delay_seconds" type="number" min="0" step="1" value="{delay_value}"></div>
           <div><label>随机抖动上限（秒）</label><input name="jitter_seconds" type="number" min="0" step="1" value="{jitter_value}"></div>
           <div><label>单轮最多处理条数（0 表示不限制）</label><input name="max_items_per_run" type="number" min="0" step="1" value="{max_items_value}"></div>
+          <div><label>图片格式</label><select name="image_format">{image_options}</select></div>
         </div>
-        <div class="help">实际间隔 = 基础间隔 + 0 到抖动上限之间的随机秒数。默认 0 秒，上一条提交完成后立即处理下一条。</div>
+        <div class="help">实际间隔 = 基础间隔 + 0 到抖动上限之间的随机秒数。默认 0 秒，上一条提交完成后立即处理下一条。图片格式默认 AUTO，避免强制 PNG 时 CDN 返回 400。</div>
         <div class="actions"><button type="submit">保存下载节奏</button></div>
       </form>
     </section>
@@ -797,13 +845,16 @@ def make_handler(app: App):
                     "request_delay_seconds": int(number("request_delay_seconds", 0)),
                     "jitter_seconds": int(number("jitter_seconds", 0)),
                     "max_items_per_run": int(number("max_items_per_run", 0)),
+                    "image_format": ((form.get("image_format") or ["AUTO"])[0] or "AUTO").upper(),
                 }
                 app.config = save_web_settings(app.config_path, app.config, patch)
+                sync_downloader_settings(app.config)
                 app.log.write(
                     "已保存小红书下载节奏："
                     f"基础间隔 {patch['request_delay_seconds']} 秒，"
                     f"抖动 {patch['jitter_seconds']} 秒，"
-                    f"单轮上限 {patch['max_items_per_run']}"
+                    f"单轮上限 {patch['max_items_per_run']}，"
+                    f"图片格式 {patch['image_format']}"
                 )
                 redirect(self)
                 return
