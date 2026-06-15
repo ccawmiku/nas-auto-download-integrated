@@ -79,7 +79,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "url": "https://www.douyin.com/user/MS4wLjABAAAANozRUmTPV4ZpvI-QTMqocY_vLWGwerzSX5vlzfgWl5Q?from_tab_name=main&showTab=favorite_collection&vid=7126720963458223363",
         },
     ],
-    "web": {"host": "0.0.0.0", "port": 8080, "log_lines": 400},
+    "web": {"host": "0.0.0.0", "port": 8080, "log_lines": 5000},
 }
 
 DOUYIN_COOKIE_DOMAINS = {"douyin.com", ".douyin.com", "www.douyin.com", ".www.douyin.com"}
@@ -578,7 +578,7 @@ class App:
     def __init__(self, config_path: Path):
         self.config_path = config_path
         self.config = load_config(config_path)
-        self.log = RingLog(int(self.config.get("web", {}).get("log_lines", 400)))
+        self.log = RingLog(int(self.config.get("web", {}).get("log_lines", 5000)))
         self.run_lock = threading.Lock()
         self.run_request_lock = threading.Lock()
         self.running = False
@@ -637,7 +637,7 @@ class App:
 
     def reload_config(self) -> None:
         self.config = load_config(self.config_path)
-        self.log.max_lines = int(self.config.get("web", {}).get("log_lines", 400))
+        self.log.max_lines = int(self.config.get("web", {}).get("log_lines", 5000))
         self.ensure_dirs()
 
     def save_config(self, patch: dict[str, Any]) -> None:

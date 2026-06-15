@@ -25,32 +25,20 @@ from douyin_f2_worker import (
     render_douyin_job_yaml,
 )
 from pixiv_auto_worker import classify_error, safe_extract_zip
-from xhs_auto_worker import save_web_settings, sync_downloader_settings
+from xhs_auto_worker import cookie_summary_from_settings, save_settings_cookie, sync_downloader_settings
 
 
 class IntegratedPageTests(unittest.TestCase):
-    def test_react_home_page_is_served_when_build_exists(self) -> None:
+    def test_home_page_includes_version_and_service_cards(self) -> None:
         body = integrated_server.page().decode("utf-8")
-        if integrated_server.frontend_static_dir() is not None:
-            self.assertIn('<div id="root"></div>', body)
-            self.assertIn("/assets/", body)
-        else:
-            self.assertIn("v1.5.1-dev", body)
-
-    def test_fallback_home_page_includes_version_and_service_cards(self) -> None:
-        old_reader = integrated_server.read_frontend_index
-        integrated_server.read_frontend_index = lambda: None
-        try:
-            body = integrated_server.page().decode("utf-8")
-        finally:
-            integrated_server.read_frontend_index = old_reader
-        self.assertIn("v1.5.1-dev", body)
+        self.assertIn("v1.6.0-dev", body)
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)
         self.assertIn("上传 cookies.txt", body)
         self.assertIn("粘贴 Cookie 内容", body)
         self.assertIn("预览差异", body)
+        self.assertNotIn('value="xhs"', body)
         self.assertIn("overflow-wrap:anywhere", body.replace(" ", ""))
         self.assertNotIn("__APP_STYLE__", body)
 
@@ -143,54 +131,30 @@ class IntegratedPageTests(unittest.TestCase):
             self.assertEqual(preview["x"]["added_names"], ["twid"])
             self.assertEqual(preview["x"]["changed_names"], ["auth_token"])
 
-    def test_imports_xhs_httponly_netscape_cookie_rows(self) -> None:
-        old_rule = integrated_server.SITE_RULES["xhs"]
-        with tempfile.TemporaryDirectory() as tmp:
-            output = Path(tmp) / "xhs_cookie.txt"
-            integrated_server.SITE_RULES["xhs"] = dict(old_rule, output=output)
-            try:
-                result = integrated_server.import_all_cookie(
-                    "# Netscape HTTP Cookie File\n"
-                    "#HttpOnly_.xiaohongshu.com\tTRUE\t/\tTRUE\t1999999999\tweb_session\tws-value\n"
-                    ".xiaohongshu.com\tTRUE\t/\tTRUE\t1999999999\ta1\ta1-value\n"
-                    ".xiaohongshu.com\tTRUE\t/\tTRUE\t1999999999\tunrelated\tignored\n",
-                    targets=["xhs"],
-                )
-            finally:
-                integrated_server.SITE_RULES["xhs"] = old_rule
-            self.assertEqual(result["xhs"]["count"], 2)
-            saved = output.read_text(encoding="utf-8")
-            self.assertIn("a1=a1-value", saved)
-            self.assertIn("web_session=ws-value", saved)
-
-    def test_cookie_preview_reports_missing_required_fields(self) -> None:
-        preview = integrated_server.analyze_cookie_import(
-            ".xiaohongshu.com\tTRUE\t/\tTRUE\t1999999999\ta1\ta1-value\n"
-        )
-        self.assertEqual(preview["xhs"]["incoming_count"], 1)
-        self.assertEqual(preview["xhs"]["missing_required"], ["web_session"])
-
     def test_cookie_import_respects_selected_targets(self) -> None:
         old_x = integrated_server.SITE_RULES["x"]
-        old_xhs = integrated_server.SITE_RULES["xhs"]
         with tempfile.TemporaryDirectory() as tmp:
             x_output = Path(tmp) / "x_cookies.txt"
-            xhs_output = Path(tmp) / "xhs_cookie.txt"
             integrated_server.SITE_RULES["x"] = dict(old_x, output=x_output)
-            integrated_server.SITE_RULES["xhs"] = dict(old_xhs, output=xhs_output)
             try:
                 result = integrated_server.import_all_cookie(
                     ".x.com\tTRUE\t/\tTRUE\t1999999999\tauth_token\tx-token\n"
                     ".xiaohongshu.com\tTRUE\t/\tTRUE\t1999999999\ta1\txhs-token\n",
-                    targets=["x"],
+                    targets=["x", "xhs"],
                 )
             finally:
                 integrated_server.SITE_RULES["x"] = old_x
-                integrated_server.SITE_RULES["xhs"] = old_xhs
             self.assertIn("x", result)
             self.assertNotIn("xhs", result)
             self.assertTrue(x_output.exists())
-            self.assertFalse(xhs_output.exists())
+
+    def test_xhs_is_not_a_unified_cookie_import_target(self) -> None:
+        self.assertNotIn("xhs", integrated_server.COOKIE_IMPORT_KEYS)
+        self.assertEqual(integrated_server.normalize_import_targets(["xhs", "x"]), ["x"])
+        preview = integrated_server.analyze_cookie_import(
+            ".xiaohongshu.com\tTRUE\t/\tTRUE\t1999999999\ta1\ta1-value\n"
+        )
+        self.assertNotIn("xhs", preview)
 
 
 class DouyinCookieTests(unittest.TestCase):
@@ -267,55 +231,33 @@ class DouyinCookieTests(unittest.TestCase):
 
 
 class XhsSettingsTests(unittest.TestCase):
-    def test_web_interval_accepts_hours_and_stores_seconds(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            secrets_path = Path(tmp) / "secrets.json"
-            config = {
-                "secrets_path": str(secrets_path),
-                "run_interval_seconds": 1800,
-                "browser": {"consecutive_downloaded_stop_count": 10},
-            }
-            result = save_web_settings(config, {"run_interval_hours": "2.5"})
-            self.assertEqual(result["run_interval_seconds"], 9000)
-            self.assertEqual(config["run_interval_seconds"], 9000)
-            self.assertIn('"run_interval_seconds": "9000"', secrets_path.read_text(encoding="utf-8"))
-
-    def test_web_interval_accepts_thirty_days_and_rejects_more(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            config = {
-                "secrets_path": str(Path(tmp) / "secrets.json"),
-                "run_interval_seconds": 1800,
-                "browser": {},
-            }
-            result = save_web_settings(config, {"run_interval_hours": "720"})
-            self.assertEqual(result["run_interval_seconds"], 2592000)
-            self.assertEqual(config["run_interval_seconds"], 2592000)
-            with self.assertRaisesRegex(ValueError, "30 天"):
-                save_web_settings(config, {"run_interval_hours": "720.1"})
-
-    def test_downloader_settings_removes_cookie_when_cookie_sync_is_disabled(self) -> None:
+    def test_downloader_settings_preserves_cookie_and_applies_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             settings_path = Path(tmp) / "settings.json"
             settings_path.write_text(
-                json.dumps({"cookie": "old-cookie", "user_agent": "old-ua"}, ensure_ascii=False),
+                json.dumps({"cookie": "a1=old; web_session=old", "custom": "keep"}, ensure_ascii=False),
                 encoding="utf-8",
             )
-            sync_downloader_settings(
-                {
-                    "secrets_path": str(Path(tmp) / "secrets.json"),
-                    "default_user_agent": "",
-                    "sync_settings": {
-                        "enabled": True,
-                        "sync_cookie": False,
-                        "sync_user_agent": False,
-                        "path": str(settings_path),
-                        "defaults": {},
-                    },
-                }
-            )
+            config = {
+                "settings_path": str(settings_path),
+                "sync_settings": {"path": str(settings_path), "defaults": {"work_path": "/xhs"}},
+            }
+            saved = sync_downloader_settings(config)
+            self.assertEqual(saved["cookie"], "a1=old; web_session=old")
+            self.assertEqual(saved["custom"], "keep")
+            self.assertEqual(saved["work_path"], "/xhs")
+            self.assertTrue(saved["folder_mode"])
+
+    def test_saves_xhs_downloader_cookie_to_settings_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            settings_path = Path(tmp) / "settings.json"
+            config = {"settings_path": str(settings_path), "sync_settings": {"path": str(settings_path)}}
+            save_settings_cookie(config, "a1=abc; web_session=def")
             saved = json.loads(settings_path.read_text(encoding="utf-8"))
-            self.assertNotIn("cookie", saved)
-            self.assertEqual(saved["user_agent"], "old-ua")
+            self.assertEqual(saved["cookie"], "a1=abc; web_session=def")
+            summary = cookie_summary_from_settings(config)
+            self.assertTrue(summary["present"])
+            self.assertEqual(summary["missing_required"], [])
 
     def test_xhs_link_queue_accepts_and_deduplicates_browser_submissions(self) -> None:
         old_queue_file = integrated_server.XHS_QUEUE_FILE

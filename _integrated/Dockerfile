@@ -1,16 +1,6 @@
-FROM node:22-bookworm-slim AS web-build
-
-WORKDIR /web
-
-COPY _frontend/integrated/package*.json ./
-RUN npm ci
-
-COPY _frontend/integrated ./
-RUN npm run build
-
 FROM mcr.microsoft.com/playwright/python:v1.56.0-noble
 
-ARG APP_VERSION=v1.5.1-dev
+ARG APP_VERSION=v1.6.0-dev
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -35,7 +25,6 @@ COPY _src/douyin-f2-auto-main /opt/nas-auto/douyin
 COPY _common/nas_auto_common /opt/nas-auto/nas_auto_common
 COPY tools/import_credentials.py /opt/nas-auto/tools/import_credentials.py
 COPY _integrated/integrated_server.py /opt/nas-auto/integrated_server.py
-COPY --from=web-build /web/dist /opt/nas-auto/web
 
 EXPOSE 14001
 

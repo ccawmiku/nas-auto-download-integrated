@@ -1,111 +1,35 @@
 {
-  "api_url": "http://192.168.1.20:13001/xhs/detail",
-  "auto_run_enabled": false,
-  "run_interval_seconds": 2592000,
-  "request_delay_seconds": 3,
-  "jitter_seconds": 2,
-  "database": "/state/xhs_auto.sqlite3",
-  "secrets_path": "/state/secrets.json",
-  "cookie_file": "/config/xhs_cookie.txt",
-  "default_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
-  "legacy_processed_json": "/state/processed.json",
+  "api_url": "http://xhs-api:5556/xhs/detail",
+  "database": "/state/xhs_queue.sqlite3",
   "queue_files": [
     "/queue/links.txt"
   ],
-  "api_skip": true,
-  "api_cookie_enabled": false,
-  "api_cookie_env": "XHS_COOKIE",
-  "api_cookie_file": "/config/xhs_cookie.txt",
-  "api_cookie_secret_key": "xhs_cookie",
+  "settings_path": "/xhs-volume/settings.json",
+  "xhs_api_log_file": "/xhs-volume/xhs-api.log",
+  "request_delay_seconds": 900,
+  "jitter_seconds": 120,
   "retry_failed": true,
   "max_download_attempts": 0,
+  "max_items_per_run": 0,
+  "api_skip_existing": true,
+  "api_timeout_seconds": 120,
   "sync_settings": {
-    "enabled": true,
-    "sync_cookie": false,
-    "sync_user_agent": true,
     "path": "/xhs-volume/settings.json",
-    "cookie_env": "XHS_COOKIE",
-    "cookie_file": "/config/xhs_cookie.txt",
-    "user_agent_env": "XHS_USER_AGENT",
-    "cookie_secret_key": "xhs_cookie",
-    "user_agent_secret_key": "xhs_user_agent",
     "defaults": {
-      "mapping_data": {},
       "work_path": "/xhs",
-      "folder_name": "Download",
-      "name_format": "发布时间 作者昵称 作品标题",
-      "proxy": null,
-      "timeout": 10,
-      "chunk": 2097152,
-      "max_retry": 5,
-      "record_data": true,
-      "image_format": "PNG",
       "folder_mode": true,
-      "language": "zh_CN",
+      "download_record": true,
       "image_download": true,
       "video_download": true,
       "live_download": true,
-      "download_record": true,
-      "author_archive": false,
-      "write_mtime": false,
-      "video_preference": "resolution",
-      "script_server": false
+      "image_format": "PNG",
+      "name_format": "发布时间 作者昵称 作品标题"
     }
-  },
-  "stop_marker": {
-    "enabled": true,
-    "title": "\u6570\u5b66\u754c\u6700\u7f8e\u5473\u7684\u4e00\u5929",
-    "match": "exact"
-  },
-  "browser": {
-    "enabled": false,
-    "backend": "cloakbrowser",
-    "headless": true,
-    "user_agent_env": "XHS_USER_AGENT",
-    "cookie_env": "XHS_COOKIE",
-    "cookie_file": "/config/xhs_cookie.txt",
-    "user_agent_secret_key": "xhs_user_agent",
-    "cookie_secret_key": "xhs_cookie",
-    "scroll_count": 40,
-    "scroll_delay_ms": 1200,
-    "consecutive_downloaded_stop_count": 10,
-    "target_timeout_ms": 45000,
-    "extractor": "/app/liked_extractor.js",
-    "auto_install_playwright": true,
-    "cloakbrowser_humanize": true,
-    "cloakbrowser_human_preset": "default",
-    "cloakbrowser_persistent_profile": true,
-    "cloakbrowser_user_data_dir": "/state/xhs/cloakbrowser/profile",
-    "cloakbrowser_stealth_args": true,
-    "cloakbrowser_geoip": false,
-    "locale": "zh-CN",
-    "timezone_id": "Asia/Shanghai",
-    "viewport": {
-      "width": 1440,
-      "height": 1000
-    },
-    "playwright_version": "1.56.0",
-    "targets": [
-      {
-        "name": "my-liked-notes",
-        "kind": "profile_liked",
-        "url": "https://www.xiaohongshu.com/user/profile/YOUR_USER_ID?tab=liked",
-        "max_links": 0,
-        "stop_title": "\u6570\u5b66\u754c\u6700\u7f8e\u5473\u7684\u4e00\u5929",
-        "stop_title_match": "exact",
-        "click_texts": [
-          "\u8d5e\u8fc7",
-          "\u70b9\u8d5e",
-          "Liked",
-          "Likes"
-        ]
-      }
-    ]
   },
   "web": {
     "enabled": true,
     "host": "0.0.0.0",
     "port": 8080,
-    "log_lines": 200
+    "log_lines": 5000
   }
 }

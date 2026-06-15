@@ -4,7 +4,6 @@ from __future__ import annotations
 import html
 import http.client
 import json
-import mimetypes
 import os
 import re
 import signal
@@ -33,9 +32,8 @@ except ModuleNotFoundError:
 
 PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
-FRONTEND_STATIC_DIR = Path(os.environ.get("FRONTEND_STATIC_DIR", str(ROOT / "web")))
 BROWSER_LOCK_PATH = os.environ.get("BROWSER_LOCK_PATH", "/tmp/nas-auto-browser.lock")
-APP_VERSION = os.environ.get("APP_VERSION", "v1.5.1-dev")
+APP_VERSION = os.environ.get("APP_VERSION", "v1.6.0-dev")
 XHS_QUEUE_FILE = Path(os.environ.get("XHS_QUEUE_FILE", "/queue/xhs/links.txt"))
 DOUYIN_CONFIG_PATH = Path(os.environ.get("DOUYIN_CONFIG_PATH", "/config/douyin/config.json"))
 DOUYIN_COOKIE_YAML_PLACEHOLDER = "__DOUYIN_COOKIE_PLACEHOLDER__"
@@ -76,15 +74,9 @@ SERVICES = {
     "pixiv": {"name": "Pixiv", "port": 18083, "path": "/pixiv/", "config": "/config/pixiv/config.json"},
     "douyin": {"name": "抖音", "port": 18084, "path": "/douyin/", "config": "/config/douyin/config.json"},
 }
-COOKIE_IMPORT_KEYS = ("xhs", "x", "douyin")
+COOKIE_IMPORT_KEYS = ("x", "douyin")
 
 SITE_RULES = {
-    "xhs": {
-        "output": Path("/config/xhs/xhs_cookie.txt"),
-        "domains": {"xiaohongshu.com", ".xiaohongshu.com", "www.xiaohongshu.com", ".www.xiaohongshu.com"},
-        "names": {"a1", "web_session", "webId", "gid", "webBuild", "unread", "xsecappid", "loadts", "acw_tc"},
-        "required": {"a1", "web_session"},
-    },
     "x": {
         "output": Path("/config/x/x_cookies.txt"),
         "domains": {"x.com", ".x.com", "twitter.com", ".twitter.com"},
@@ -234,7 +226,7 @@ def log(message: str) -> None:
     print(line, flush=True)
     with log_lock:
         log_lines.append(line)
-        del log_lines[:-300]
+        del log_lines[:-5000]
 
 
 def deep_update(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
@@ -275,22 +267,17 @@ def ensure_configs() -> None:
         ROOT / "xhs" / "config.example.json",
         {
             "api_url": os.environ.get("XHS_API_URL", "http://xhs-api:5556/xhs/detail"),
-            "database": "/state/xhs/xhs_auto.sqlite3",
-            "auto_run_enabled": os.environ.get("XHS_AUTO_RUN_ENABLED", "false").lower() in {"1", "true", "yes", "on"},
-            "secrets_path": "/state/xhs/secrets.json",
-            "cookie_file": "/config/xhs/xhs_cookie.txt",
-            "api_cookie_file": "/config/xhs/xhs_cookie.txt",
-            "api_cookie_enabled": os.environ.get("XHS_API_COOKIE_ENABLED", "false").lower() in {"1", "true", "yes", "on"},
+            "database": "/state/xhs/xhs_queue.sqlite3",
             "queue_files": ["/queue/xhs/links.txt"],
-            "web": {"host": "127.0.0.1", "port": 18081},
+            "settings_path": "/xhs-volume/settings.json",
+            "xhs_api_log_file": "/xhs-volume/xhs-api.log",
+            "request_delay_seconds": int(os.environ.get("XHS_REQUEST_DELAY_SECONDS", "900")),
+            "jitter_seconds": int(os.environ.get("XHS_JITTER_SECONDS", "120")),
+            "max_items_per_run": int(os.environ.get("XHS_MAX_ITEMS_PER_RUN", "0") or "0"),
+            "web": {"host": "127.0.0.1", "port": 18081, "log_lines": 5000},
             "sync_settings": {
                 "path": "/xhs-volume/settings.json",
-                "cookie_file": "/config/xhs/xhs_cookie.txt",
-                "sync_cookie": os.environ.get("XHS_SYNC_DOWNLOADER_COOKIE", "false").lower() in {"1", "true", "yes", "on"},
-            },
-            "browser": {
-                "enabled": os.environ.get("XHS_BROWSER_ENABLED", "false").lower() in {"1", "true", "yes", "on"},
-                "cookie_file": "/config/xhs/xhs_cookie.txt",
+                "defaults": {"work_path": "/xhs"},
             },
         },
     )
@@ -398,11 +385,6 @@ def start_children() -> None:
         "xhs-worker",
         [sys.executable, "/opt/nas-auto/xhs/xhs_auto_worker.py", "--config", "/config/xhs/config.json"],
         "/opt/nas-auto/xhs",
-        {
-            "XHS_COOKIE_FILE": "/config/xhs/xhs_cookie.txt",
-            "CLOAKBROWSER_CACHE_DIR": "/state/xhs/cloakbrowser",
-            "CLOAKBROWSER_AUTO_UPDATE": "false",
-        },
     )
     start_process(
         "x-worker",
@@ -792,7 +774,7 @@ def service_status() -> dict[str, Any]:
             for key, svc in SERVICES.items()
         ],
         "browser_lock": Path(BROWSER_LOCK_PATH).exists(),
-        "logs": list(log_lines[-80:]),
+        "logs": list(log_lines[-1000:]),
         "version": APP_VERSION,
     }
 
@@ -874,64 +856,7 @@ def trigger_xhs_worker_run() -> dict[str, Any]:
         conn.close()
 
 
-def frontend_static_candidates() -> list[Path]:
-    local_dist = Path(__file__).resolve().parents[1] / "_frontend" / "integrated" / "dist"
-    return [FRONTEND_STATIC_DIR, Path(__file__).with_name("web"), local_dist]
-
-
-def frontend_static_dir() -> Path | None:
-    for path in frontend_static_candidates():
-        if (path / "index.html").exists():
-            return path
-    return None
-
-
-def read_frontend_index() -> bytes | None:
-    static_dir = frontend_static_dir()
-    if static_dir is None:
-        return None
-    return (static_dir / "index.html").read_bytes()
-
-
-def resolve_frontend_asset(request_path: str) -> Path | None:
-    static_dir = frontend_static_dir()
-    if static_dir is None:
-        return None
-    relative = request_path.lstrip("/")
-    if not relative or relative == "index.html":
-        relative = "index.html"
-    candidate = (static_dir / relative).resolve()
-    root = static_dir.resolve()
-    try:
-        candidate.relative_to(root)
-    except ValueError:
-        return None
-    if not candidate.exists() or not candidate.is_file():
-        return None
-    return candidate
-
-
-def send_frontend_asset(handler: BaseHTTPRequestHandler, request_path: str) -> bool:
-    asset = resolve_frontend_asset(request_path)
-    if asset is None:
-        return False
-    data = asset.read_bytes()
-    content_type = mimetypes.guess_type(str(asset))[0] or "application/octet-stream"
-    handler.send_response(HTTPStatus.OK)
-    handler.send_header("Content-Type", content_type)
-    handler.send_header("Content-Length", str(len(data)))
-    if asset.name != "index.html":
-        handler.send_header("Cache-Control", "public, max-age=31536000, immutable")
-    handler.end_headers()
-    handler.wfile.write(data)
-    return True
-
-
 def page(message: str = "") -> bytes:
-    static_index = read_frontend_index()
-    if static_index is not None and not message:
-        return static_index
-
     nav_items = ""
     service_cards = ""
     ready_count = 0
@@ -1120,7 +1045,7 @@ setInterval(refreshStatus, 3000);
     <div class="dashboard-view" id="dashboardView">
       {f'<section class="ok">{html.escape(message)}</section>' if message else ''}
       <section class="hero-panel">
-        <div><h1>统一下载控制台</h1><p class="muted">侧边栏切换小红书、X、Pixiv、抖音；Cookie 导入先预览差异，再按目标写入。</p></div>
+        <div><h1>统一下载控制台</h1><p class="muted">侧边栏切换小红书、X、Pixiv、抖音；统一 Cookie 导入仅处理 X 和抖音，小红书 Cookie 在小红书页面写入下载器 settings.json。</p></div>
         <div class="summary-strip">
           <div class="summary-card"><span>服务就绪</span><strong>{ready_count}/{len(SERVICES)}</strong></div>
           <div class="summary-card"><span>浏览器锁</span><strong>{lock}</strong></div>
@@ -1129,10 +1054,10 @@ setInterval(refreshStatus, 3000);
       </section>
       <div class="dashboard-grid">
         <section><h2>服务入口</h2><div class="service-grid">{service_cards}</div></section>
-        <section><h2>最近日志</h2><pre id="logBox">{html.escape(chr(10).join(log_lines[-80:]))}</pre></section>
+        <section><h2>最近日志</h2><pre id="logBox">{html.escape(chr(10).join(log_lines[-500:]))}</pre></section>
       </div>
       <section><h2>Cookie 导入</h2>
-        <p class="muted">先上传浏览器导出的 cookies.txt，或粘贴单行 Cookie Header / 抖音 app.yaml 的 <code>cookie:</code> 段。预览只比较字段名和数量，不显示 Cookie 明文；点击导入后只写入勾选目标。</p>
+        <p class="muted">先上传浏览器导出的 cookies.txt，或粘贴单行 Cookie Header / 抖音 app.yaml 的 <code>cookie:</code> 段。预览只比较字段名和数量，不显示 Cookie 明文；点击导入后只写入勾选目标。小红书不走这里。</p>
         <form id="cookieImportForm" method="post" action="/import-cookies" enctype="multipart/form-data">
           <div class="import-layout">
             <div>
@@ -1142,7 +1067,6 @@ setInterval(refreshStatus, 3000);
               <textarea name="cookie_text" placeholder="cookie: sessionid=...; ttwid=..."></textarea>
             </div>
             <div class="target-grid">
-              <label class="target-check"><input type="checkbox" name="targets" value="xhs" checked><span>小红书<small>/config/xhs/xhs_cookie.txt</small></span></label>
               <label class="target-check"><input type="checkbox" name="targets" value="x" checked><span>X<small>/config/x/x_cookies.txt</small></span></label>
               <label class="target-check"><input type="checkbox" name="targets" value="douyin" checked><span>抖音<small>/config/douyin/douyin_cookie.txt，并同步 f2 YAML</small></span></label>
             </div>
@@ -1241,9 +1165,6 @@ class Handler(BaseHTTPRequestHandler):
         if split.path == "/api/status":
             self.send_json_payload(service_status())
             return
-        if split.path.startswith("/assets/") or split.path in {"/favicon.ico", "/index.html"}:
-            if send_frontend_asset(self, split.path):
-                return
         for key, svc in SERVICES.items():
             if split.path == svc["path"].rstrip("/"):
                 self.send_response(HTTPStatus.FOUND)
@@ -1276,7 +1197,7 @@ class Handler(BaseHTTPRequestHandler):
             form = read_import_cookie_form(self, length)
             targets = normalize_import_targets(form.get("targets"))
             if not targets:
-                payload = {"ok": False, "message": "未选择要导入的项目，请至少勾选小红书、X 或抖音中的一个。"}
+                payload = {"ok": False, "message": "未选择要导入的项目，请至少勾选 X 或抖音中的一个。"}
             else:
                 result = import_all_cookie(str(form.get("text") or ""), targets)
                 payload = {
@@ -1333,7 +1254,7 @@ class Handler(BaseHTTPRequestHandler):
             form = read_import_cookie_form(self, length)
             targets = normalize_import_targets(form.get("targets"))
             if not targets:
-                message = "未选择要导入的项目，请至少勾选小红书、X 或抖音中的一个。"
+                message = "未选择要导入的项目，请至少勾选 X 或抖音中的一个。"
             else:
                 result = import_all_cookie(str(form.get("text") or ""), targets)
                 message = "导入完成：" + "；".join(

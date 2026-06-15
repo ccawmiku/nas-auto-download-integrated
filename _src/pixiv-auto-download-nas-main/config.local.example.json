@@ -30,7 +30,7 @@
     "enabled": true,
     "host": "127.0.0.1",
     "port": 18081,
-    "log_lines": 400
+    "log_lines": 5000
   },
   "network": {
     "api_timeout_seconds": 60,

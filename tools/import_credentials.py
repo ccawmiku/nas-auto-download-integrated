@@ -6,23 +6,11 @@ import sys
 from pathlib import Path
 
 
-DEFAULT_XHS_OUTPUT = Path(os.environ.get("XHS_COOKIE_OUTPUT", "/volume2/docker/xhs-downloader/auto/config/xhs_cookie.txt"))
 DEFAULT_X_OUTPUT = Path(os.environ.get("X_COOKIE_OUTPUT", "/volume2/docker/x-auto-download/config/x_cookies.txt"))
 DEFAULT_PIXIV_OUTPUT = Path(
     os.environ.get("PIXIV_REFRESH_TOKEN_OUTPUT", "/volume2/docker/pixiv-auto-download/config/pixiv_refresh_token.txt")
 )
 TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{30,}")
-XHS_COOKIE_NAMES = {
-    "a1",
-    "web_session",
-    "webId",
-    "gid",
-    "webBuild",
-    "unread",
-    "xsecappid",
-    "loadts",
-    "acw_tc",
-}
 X_COOKIE_NAMES = {
     "auth_token",
     "ct0",
@@ -69,15 +57,11 @@ def cookie_header_names(text: str) -> set[str]:
 def detect_cookie_target(path: Path, text: str) -> str:
     name = path.name.lower()
     lowered = text.lower()
-    if "xiaohongshu.com" in lowered or "xhslink.com" in lowered or "xhs" in name or "xiaohongshu" in name:
-        return "xhs"
     if "twitter.com" in lowered or "x.com" in lowered or name.startswith("x_") or "twitter" in name:
         return "x"
     if "pixiv" in name and "token" in name:
         return "pixiv_token"
     names = cookie_header_names(text)
-    if names & XHS_COOKIE_NAMES:
-        return "xhs"
     if {"auth_token", "ct0"} <= names:
         return "x"
     return ""
@@ -94,8 +78,6 @@ def discover_bundle(bundle: Path) -> dict[str, Path]:
         if target and target not in found:
             found[target] = path
         names = cookie_header_names(text)
-        if names & XHS_COOKIE_NAMES and "xhs" not in found:
-            found["xhs"] = path
         if {"auth_token", "ct0"} <= names and "x" not in found:
             found["x"] = path
     return found
@@ -148,9 +130,7 @@ def import_cookie(label: str, source: Path, output: Path, dry_run: bool) -> str:
     text = read_text(source)
     if not looks_like_cookie_export(text):
         raise ValueError(f"{label} source does not look like a cookie export: {source}")
-    if label == "xhs":
-        text = filter_flat_cookie_header(text, XHS_COOKIE_NAMES)
-    elif label == "x":
+    if label == "x":
         text = filter_flat_cookie_header(text, X_COOKIE_NAMES)
         text = cookie_header_to_netscape(text, ".x.com")
     target = write_secret(output, text, dry_run)
@@ -177,10 +157,8 @@ def existing_path(value: str) -> Path | None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Import NAS downloader credentials into the shared secrets folder.")
     parser.add_argument("--bundle", default="", help="Folder containing exported cookie/token files to auto-detect.")
-    parser.add_argument("--xhs", default="", help="XHS Netscape cookies.txt, Cookie header, or cookie JSON file.")
     parser.add_argument("--x", default="", help="X/Twitter Netscape cookies.txt, Cookie header, or cookie JSON file.")
     parser.add_argument("--pixiv-token", default="", help="Pixiv refresh-token text file.")
-    parser.add_argument("--xhs-output", default=str(DEFAULT_XHS_OUTPUT))
     parser.add_argument("--x-output", default=str(DEFAULT_X_OUTPUT))
     parser.add_argument("--pixiv-output", default=str(DEFAULT_PIXIV_OUTPUT))
     parser.add_argument("--dry-run", action="store_true")
@@ -194,7 +172,6 @@ def main() -> int:
         selected.update(discover_bundle(bundle))
 
     explicit = {
-        "xhs": existing_path(args.xhs),
         "x": existing_path(args.x),
         "pixiv_token": existing_path(args.pixiv_token),
     }
@@ -203,17 +180,15 @@ def main() -> int:
             selected[key] = path
 
     if not selected:
-        parser.error("Provide --bundle and/or at least one of --xhs, --x, --pixiv-token.")
+        parser.error("Provide --bundle and/or at least one of --x, --pixiv-token.")
 
     results = []
-    if selected.get("xhs"):
-        results.append(import_cookie("xhs", selected["xhs"], Path(args.xhs_output).expanduser(), args.dry_run))
     if selected.get("x"):
         results.append(import_cookie("x", selected["x"], Path(args.x_output).expanduser(), args.dry_run))
     if selected.get("pixiv_token"):
         results.append(import_pixiv_token(selected["pixiv_token"], Path(args.pixiv_output).expanduser(), args.dry_run))
 
-    missing = [name for name in ("xhs", "x", "pixiv_token") if name not in selected]
+    missing = [name for name in ("x", "pixiv_token") if name not in selected]
     for line in results:
         print(("would import " if args.dry_run else "imported ") + line)
     if missing:

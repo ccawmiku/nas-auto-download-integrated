@@ -85,7 +85,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "enabled": True,
         "host": "0.0.0.0",
         "port": 8080,
-        "log_lines": 400,
+        "log_lines": 5000,
     },
     "network": {
         "api_timeout_seconds": 60,
@@ -1072,7 +1072,7 @@ class App:
     def __init__(self, config_path: Path):
         self.config_path = config_path
         self.config = load_config(config_path)
-        self.log = RingLog(int(self.config.get("web", {}).get("log_lines", 400)))
+        self.log = RingLog(int(self.config.get("web", {}).get("log_lines", 5000)))
         self.store = Store(Path(self.config["database"]))
         self.run_lock = threading.Lock()
         self.running = False
@@ -1110,7 +1110,7 @@ class App:
 
     def reload_config(self) -> None:
         self.config = load_config(self.config_path)
-        self.log.max_lines = int(self.config.get("web", {}).get("log_lines", 400))
+        self.log.max_lines = int(self.config.get("web", {}).get("log_lines", 5000))
 
     def save_config(self, patch: dict[str, Any]) -> None:
         self.config = deep_merge(self.config, patch)

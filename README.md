@@ -25,7 +25,7 @@ docker compose up -d
 默认镜像：
 
 ```text
-ghcr.io/ccawmiku/nas-auto-download-integrated:v1.5.1-dev
+ghcr.io/ccawmiku/nas-auto-download-integrated:v1.6.0-dev
 ```
 
 每次发布都会同步更新 `docker-compose.yml` 里的镜像版本。NAS 端更新时执行 `docker compose pull && docker compose up -d`，避免复用旧镜像 tag。
@@ -63,16 +63,18 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.5.1-dev
 
 打开 `http://NAS_IP:14001` 后：
 
-- 统一首页已经重构为 React + shadcn 风格控制台，最终镜像只带静态资源，不需要 Node 运行时
+- 统一首页回到轻量 Python 控制台，不再引入 React/Vue/shadcn-ui，也不需要 Node 构建阶段
 - 首页可以进入小红书、X、Pixiv、抖音四个管理页面
 - 首页会显示各子服务是否就绪；子服务启动中时统一首页仍会先打开
 - 首页可以粘贴浏览器插件导出的一整份全站 Cookie header
 - 首页也可以上传 `cookies.txt`，只解析内容，不保存原始上传文件
-- 导入器会自动拆出小红书、X 和抖音所需 Cookie，并支持 Netscape 文件里的 `#HttpOnly_` 行
-- Cookie 预览会提示关键字段缺失；小红书重点看 `a1` 和 `web_session`
-- 小红书自动运行和无头浏览器采集默认关闭，避免账号风控；运行间隔使用小时输入，默认/最大都是 30 天
+- 导入器只处理 X 和抖音 Cookie；小红书 Cookie 不再走统一导入
+- Cookie 预览会提示 X/抖音关键字段缺失
+- 小红书自动运行、无头浏览器采集、CloakBrowser 和旧统一 Cookie 导入已经完全移除
 - 小红书浏览器脚本可以把作品链接提交到 `http://NAS_IP:14001/api/xhs/links`，Docker 写入 `/queue/xhs/links.txt` 后才返回确认；网页确认完成后可以直接关闭
-- 小红书第三方下载器 `settings.json` 默认不再同步统一导入或无头浏览器 Cookie，已有旧 `cookie` 字段会在同步 settings 时移除；如后续第三方 API 强制需要 Cookie，应单独配置下载器专用 Cookie
+- 小红书管理页可以单独粘贴 Cookie Header，并写入 JoeanAmier/XHS-Downloader 2.7 的 `/xhs-volume/settings.json` 里的 `cookie` 字段
+- 小红书管理页会显示浏览器脚本发来的队列、worker 日志和 `xhs-api` 日志；compose 会把 `xhs-api` 输出追加到 `/app/Volume/xhs-api.log`
+- X 管理页会单独列出 `No video could be found in this tweet` 的失败链接，方便手动下载后删除记录
 - Pixiv 页面内可以生成登录链接、粘贴 callback/code、换取 refresh-token
 - 抖音页面会显示当前 f2 版本、PyPI 最新版本和检查时间，可手动触发版本检查
 - 抖音页面支持单独粘贴 `app.yaml` 里的 `cookie:` 段并直接保存，不依赖统一首页导入
@@ -81,8 +83,7 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.5.1-dev
 - 抖音页面会检查关键字段和参考 `app.yaml` 的 64 个字段，字段不满会直接提示风险
 - 抖音页面支持手动停止当前运行中的任务，停止后不会继续后续 job
 - 抖音运行目录会生成本地 `conf/conf.yaml` 并默认关闭 f2 的 Bark 推送，避免未配置 Bark 时额外报 405 噪音
-- 统一首页使用现代化侧边栏切换子页面，子页面不再额外注入返回条
-- 手动启用小红书浏览器采集时，后端优先使用 CloakBrowser，启用轻量 humanize、`zh-CN`、`Asia/Shanghai` 和持久 profile，失败会回退 Playwright；CloakBrowser 二进制和 profile 都保存在 `/state/xhs/cloakbrowser`
+- 统一首页使用侧边栏切换子页面，子页面不再额外注入返回条
 
 ## 小红书浏览器脚本队列
 
@@ -92,7 +93,7 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.5.1-dev
 电脑浏览器 userscript 采集当前作品/页面链接（仓库脚本：tools/userscripts/xhs-docker-queue.user.js）
   -> POST http://NAS_IP:14001/api/xhs/links
   -> Docker 写入 /queue/xhs/links.txt 并触发小红书 worker
-  -> worker 调用 xhs-api 下载到 /xhs
+  -> worker 按队列一个一个调用 xhs-api 下载到 /xhs
 ```
 
 接口接受 JSON：
@@ -102,6 +103,14 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.5.1-dev
 ```
 
 返回里的 `accepted` 是本次新入队数量，`skipped` 是已经在队列中的数量；只有有效链接完整写入或确认已存在时，浏览器脚本才提示发送完成。
+
+小红书下载器 Cookie 在小红书页面单独填写，保存位置是：
+
+```text
+/volume2/docker/nas-auto-download-integrated/xhs/volumes/settings.json
+```
+
+该 Cookie 只给 JoeanAmier/XHS-Downloader 2.7 的 API 下载使用，不再和 NAS 无头浏览器或统一 Cookie 导入共用。
 
 ## 抖音 f2 迁移
 
@@ -123,10 +132,9 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.5.1-dev
 
 ## 浏览器性能保护
 
-手动启用小红书浏览器采集时，小红书和 X 都会使用全局浏览器锁：
+X 的自动采集仍会使用全局浏览器锁：
 
-- 同一时间只允许一个无头浏览器采集任务运行
-- 另一个任务会等待，默认最长等待 7200 秒
+- 同一时间只允许一个 X 无头浏览器采集任务运行
 - X 的“连续已下载停止”按数据库 `done` 状态判断，迁移后不会因为旧文件路径变化而一直下翻
 - Pixiv OAuth/API/图片下载带网络重试；无 refresh-token 时不会自动运行下载任务，只保留网页等待配置
 

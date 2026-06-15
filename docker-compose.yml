@@ -11,11 +11,11 @@ services:
       - /volume2/se-p/小红书:/xhs
     tty: true
     stdin_open: true
-    command: python main.py api
+    command: bash -lc "python main.py api 2>&1 | tee -a /app/Volume/xhs-api.log"
     restart: unless-stopped
 
   nas-auto-download:
-    image: ghcr.io/ccawmiku/nas-auto-download-integrated:v1.5.1-dev
+    image: ghcr.io/ccawmiku/nas-auto-download-integrated:v1.6.0-dev
     container_name: nas-auto-download
     depends_on:
       - xhs-api

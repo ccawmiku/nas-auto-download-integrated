@@ -166,7 +166,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "enabled": True,
         "host": "0.0.0.0",
         "port": 8080,
-        "log_lines": 300,
+        "log_lines": 5000,
     },
 }
 
@@ -283,7 +283,7 @@ def tail_text(text: str, limit: int = 2000) -> str:
 
 
 class RingLog:
-    def __init__(self, max_lines: int = 300):
+    def __init__(self, max_lines: int = 5000):
         self.max_lines = max_lines
         self._lock = threading.Lock()
         self._lines: list[str] = []
@@ -490,6 +490,29 @@ class Store:
                 item["files_count"] = len(files)
                 result.append(item)
             return result
+
+    def manual_failed_tweets(self, limit: int = 200) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                select tweet_id, url, author, media_hint, status, attempts, error, updated_at
+                from tweets
+                where status='failed'
+                  and (
+                    media_hint='manual_check'
+                    or error like '%No video could be found%'
+                  )
+                order by updated_at desc
+                limit ?
+                """,
+                (limit,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def delete_tweet(self, tweet_id: str) -> bool:
+        with self._lock, self.connect() as conn:
+            cur = conn.execute("delete from tweets where tweet_id=?", (tweet_id,))
+            return int(cur.rowcount or 0) > 0
 
     def recent_runs(self, limit: int = 20) -> list[dict[str, Any]]:
         with self.connect() as conn:
@@ -1325,7 +1348,7 @@ class App:
     def __init__(self, config_path: Path):
         self.config_path = config_path
         self.config = load_config(config_path)
-        self.log = RingLog(int(self.config.get("web", {}).get("log_lines", 300)))
+        self.log = RingLog(int(self.config.get("web", {}).get("log_lines", 5000)))
         self.store = Store(Path(self.config["database"]), self.log)
         self.run_lock = threading.Lock()
         self.running = False
@@ -1365,7 +1388,7 @@ class App:
 
     def reload_config(self) -> None:
         self.config = load_config(self.config_path)
-        self.log.max_lines = int(self.config.get("web", {}).get("log_lines", 300))
+        self.log.max_lines = int(self.config.get("web", {}).get("log_lines", 5000))
 
     def save_config(self, patch: dict[str, Any]) -> None:
         self.config = deep_merge(self.config, patch)
@@ -1663,6 +1686,7 @@ class App:
             "config": self.config,
             "runs": self.store.recent_runs(),
             "tweets": self.store.recent_tweets(),
+            "manual_failed": self.store.manual_failed_tweets(),
             "logs": self.log.lines(),
             "last_run_message": self.last_run_message,
             "progress": self.get_progress(),
@@ -1715,6 +1739,11 @@ __APP_STYLE__
         <div class="help">会先用浏览器打开单条推文识别图片/视频，再强制重新下载这一条；同一时间仍然只跑一个任务。</div>
         <div class="actions"><button type="submit">下载这一条</button></div>
       </form>
+    </section>
+    <section>
+      <h2>需要手动处理的视频失败链接</h2>
+      <div class="help">这里只列出 yt-dlp 明确返回 “No video could be found in this tweet” 的失败项；你手动下载后可以删除对应记录。</div>
+      <table><thead><tr><th>Tweet</th><th>作者</th><th>次数</th><th>更新时间</th><th>错误</th><th>操作</th></tr></thead><tbody id="manualFailedBody"></tbody></table>
     </section>
     <section>
       <h2>配置</h2>
@@ -1788,6 +1817,9 @@ __APP_STYLE__
       $("runsBody").innerHTML = (data.runs || []).map((r) =>
         `<tr><td>${r.id}</td><td>${esc(r.started_at)}</td><td>${esc(r.status)}</td><td>${r.discovered}</td><td>${r.downloaded}</td><td>${r.skipped}</td><td>${r.failed}</td></tr>`
       ).join("");
+      $("manualFailedBody").innerHTML = (data.manual_failed || []).map((t) =>
+        `<tr><td><a href="${esc(t.url)}" target="_blank">${esc(t.tweet_id)}</a></td><td>${esc(t.author)}</td><td>${esc(t.attempts)}</td><td>${esc(t.updated_at || "")}</td><td>${esc((t.error || "").slice(0, 180))}</td><td><form method="post" action="/manual-failed/delete"><input type="hidden" name="tweet_id" value="${esc(t.tweet_id)}"><button class="secondary" type="submit">删除</button></form></td></tr>`
+      ).join("") || `<tr><td colspan="6" class="muted">暂无需要手动处理的失败链接。</td></tr>`;
       $("tweetsBody").innerHTML = (data.tweets || []).map((t) =>
         `<tr><td><a href="${esc(t.url)}" target="_blank">${esc(t.tweet_id)}</a></td><td>${esc(t.author)}</td><td>${esc(typeName(t.media_hint))}</td><td>${esc(t.status)}</td><td>${t.files_count || 0}</td><td>${esc(t.attempts)}</td><td>${esc((t.error || "").slice(0, 120))}</td></tr>`
       ).join("");
@@ -1872,6 +1904,13 @@ def make_handler(app: App):
             if self.path == "/manual-download":
                 manual_url = (form.get("manual_url") or [""])[0]
                 app.start_manual_download_thread(manual_url)
+                redirect(self)
+                return
+            if self.path == "/manual-failed/delete":
+                tweet_id = (form.get("tweet_id") or [""])[0].strip()
+                if tweet_id:
+                    deleted = app.store.delete_tweet(tweet_id)
+                    app.log.write(f"手动失败列表删除 {tweet_id}: {'ok' if deleted else 'not found'}")
                 redirect(self)
                 return
             if self.path == "/reload":
