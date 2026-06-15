@@ -72,8 +72,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "queue_files": ["/queue/links.txt"],
     "settings_path": "/xhs-volume/settings.json",
     "xhs_api_log_file": "/xhs-volume/xhs-api.log",
-    "request_delay_seconds": 900,
-    "jitter_seconds": 120,
+    "request_delay_seconds": 0,
+    "jitter_seconds": 0,
     "retry_failed": True,
     "max_download_attempts": 0,
     "max_items_per_run": 0,
@@ -484,8 +484,8 @@ class App:
                 self.log.write(message)
                 self.store.finish_run(run_id, "done", stats, message)
                 return stats
-            delay = max(0.0, float(self.config.get("request_delay_seconds", 900) or 0))
-            jitter = max(0.0, float(self.config.get("jitter_seconds", 120) or 0))
+            delay = max(0.0, float(self.config.get("request_delay_seconds", 0) or 0))
+            jitter = max(0.0, float(self.config.get("jitter_seconds", 0) or 0))
             api_url = str(self.config.get("api_url") or DEFAULT_CONFIG["api_url"])
             timeout = int(self.config.get("api_timeout_seconds", 120) or 120)
             skip = bool(self.config.get("api_skip_existing", True))
@@ -555,7 +555,10 @@ class App:
         }
 
 
-def html_page(_app: App) -> str:
+def html_page(app: App) -> str:
+    delay_value = html.escape(str(app.config.get("request_delay_seconds", 0)))
+    jitter_value = html.escape(str(app.config.get("jitter_seconds", 0)))
+    max_items_value = html.escape(str(app.config.get("max_items_per_run", 0)))
     style = app_css(
         """
 .split{display:grid;grid-template-columns:1fr 1fr;gap:16px}
@@ -597,6 +600,18 @@ pre{max-height:680px}
         <div class="metric"><span class="label">当前</span><strong id="progressMetric">0 / 0</strong></div>
       </div>
       <div class="help" id="currentUrl"></div>
+    </section>
+    <section>
+      <h2>下载节奏</h2>
+      <form method="post" action="/settings">
+        <div class="grid">
+          <div><label>两条之间基础间隔（秒）</label><input name="request_delay_seconds" type="number" min="0" step="1" value="{delay_value}"></div>
+          <div><label>随机抖动上限（秒）</label><input name="jitter_seconds" type="number" min="0" step="1" value="{jitter_value}"></div>
+          <div><label>单轮最多处理条数（0 表示不限制）</label><input name="max_items_per_run" type="number" min="0" step="1" value="{max_items_value}"></div>
+        </div>
+        <div class="help">实际间隔 = 基础间隔 + 0 到抖动上限之间的随机秒数。默认 0 秒，上一条提交完成后立即处理下一条。</div>
+        <div class="actions"><button type="submit">保存下载节奏</button></div>
+      </form>
     </section>
     <div class="split">
       <section class="queue-form">
@@ -768,6 +783,28 @@ def make_handler(app: App):
                 cookie_text = (form.get("cookie_text") or [""])[0]
                 save_settings_cookie(app.config, cookie_text)
                 app.log.write("已保存小红书下载器 settings.json Cookie。")
+                redirect(self)
+                return
+            if self.path == "/settings":
+                def number(name: str, default: float) -> float:
+                    raw_value = (form.get(name) or [str(default)])[0]
+                    try:
+                        return max(0.0, float(raw_value))
+                    except ValueError:
+                        return default
+
+                patch = {
+                    "request_delay_seconds": int(number("request_delay_seconds", 0)),
+                    "jitter_seconds": int(number("jitter_seconds", 0)),
+                    "max_items_per_run": int(number("max_items_per_run", 0)),
+                }
+                app.config = save_web_settings(app.config_path, app.config, patch)
+                app.log.write(
+                    "已保存小红书下载节奏："
+                    f"基础间隔 {patch['request_delay_seconds']} 秒，"
+                    f"抖动 {patch['jitter_seconds']} 秒，"
+                    f"单轮上限 {patch['max_items_per_run']}"
+                )
                 redirect(self)
                 return
             self.send_error(HTTPStatus.NOT_FOUND)

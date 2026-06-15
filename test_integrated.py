@@ -31,7 +31,7 @@ from xhs_auto_worker import cookie_summary_from_settings, save_settings_cookie, 
 class IntegratedPageTests(unittest.TestCase):
     def test_home_page_includes_version_and_service_cards(self) -> None:
         body = integrated_server.page().decode("utf-8")
-        self.assertIn("v1.6.0-dev", body)
+        self.assertIn("v1.6.1-dev", body)
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)
