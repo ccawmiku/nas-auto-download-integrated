@@ -30,6 +30,7 @@ from pixiv_auto_worker import classify_error, safe_extract_zip
 from xhs_auto_worker import (
     RingLog as XhsRingLog,
     Store as XhsStore,
+    compare_xhs_library,
     cookie_summary_from_settings,
     is_transient_xhs_failure,
     save_settings_cookie,
@@ -41,7 +42,7 @@ from xhs_auto_worker import (
 class IntegratedPageTests(unittest.TestCase):
     def test_home_page_includes_version_and_service_cards(self) -> None:
         body = integrated_server.page().decode("utf-8")
-        self.assertIn("v1.6.4-dev", body)
+        self.assertIn("v1.6.5-dev", body)
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)
@@ -227,6 +228,26 @@ class XhsSettingsTests(unittest.TestCase):
         self.assertTrue(is_transient_xhs_failure("错误信息: ReadTimeout('') 网络异常"))
         self.assertTrue(is_transient_xhs_failure("RemoteProtocolError('peer closed connection')"))
         self.assertFalse(xhs_api_segment_has_failure("作品处理完成：69eddca4000000001f004e2d"))
+
+    def test_compares_xhs_library_by_author_and_title(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "2026-06-15_10.32.53_小小的鼠_从今往后不会再离开您的身边了_指挥官").mkdir()
+            (root / "2026-06-15_04.32.01_猫猫真可爱ovo_我怎么这么可爱").mkdir()
+            result = compare_xhs_library(
+                [
+                    {"author": "小小的鼠", "title": "从今往后不会再离开您的身边了_指挥官"},
+                    {"author": "苏丹", "title": "知更鸟和二月七"},
+                ],
+                root,
+            )
+            self.assertEqual(result["submitted_count"], 2)
+            self.assertEqual(result["local_count"], 2)
+            self.assertEqual(result["matched_count"], 1)
+            self.assertEqual(result["missing_count"], 1)
+            self.assertEqual(result["extra_count"], 1)
+            self.assertEqual(result["missing"][0]["title"], "知更鸟和二月七")
+            self.assertEqual(result["extra"][0]["folder"], "2026-06-15_04.32.01_猫猫真可爱ovo_我怎么这么可爱")
 
     def test_xhs_link_queue_accepts_and_deduplicates_browser_submissions(self) -> None:
         old_queue_file = integrated_server.XHS_QUEUE_FILE

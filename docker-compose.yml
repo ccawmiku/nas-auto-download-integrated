@@ -15,7 +15,7 @@ services:
     restart: unless-stopped
 
   nas-auto-download:
-    image: ghcr.io/ccawmiku/nas-auto-download-integrated:v1.6.4-dev
+    image: ghcr.io/ccawmiku/nas-auto-download-integrated:v1.6.5-dev
     container_name: nas-auto-download
     depends_on:
       - xhs-api
@@ -26,6 +26,7 @@ services:
       - /volume2/docker/nas-auto-download-integrated/xhs/auto/config:/config/xhs
       - /volume2/docker/nas-auto-download-integrated/xhs/auto/queue:/queue/xhs
       - /volume2/docker/nas-auto-download-integrated/xhs/auto/state:/state/xhs
+      - /volume2/se-p/小红书:/xhs
       - /volume2/docker/nas-auto-download-integrated/x/config:/config/x
       - /volume2/docker/nas-auto-download-integrated/x/state:/state/x
       - /volume2/docker/nas-auto-download-integrated/x/downloads-metadata:/downloads/x/downloads-metadata

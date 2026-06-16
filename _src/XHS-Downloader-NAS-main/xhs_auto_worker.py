@@ -276,6 +276,84 @@ def read_file_since(path: Path, offset: int, max_bytes: int = 120000) -> str:
         return ""
 
 
+def normalize_compare_text(value: str) -> str:
+    text = str(value or "").strip().lower()
+    return re.sub(r"[\s_\-:：.。·,，!！?？'\"“”‘’()[\]【】{}]+", "", text)
+
+
+def strip_xhs_date_prefix(folder_name: str) -> str:
+    return re.sub(r"^\d{4}-\d{2}-\d{2}[_ ]\d{2}[.:]\d{2}[.:]\d{2}_", "", str(folder_name or ""), count=1)
+
+
+def local_folder_record(path: Path) -> dict[str, str]:
+    body = strip_xhs_date_prefix(path.name)
+    parts = body.split("_", 1)
+    author = parts[0].strip() if parts else ""
+    title = parts[1].strip() if len(parts) > 1 else body.strip()
+    return {
+        "folder": path.name,
+        "author": author,
+        "title": title,
+        "key": f"{normalize_compare_text(author)}|{normalize_compare_text(title)}",
+        "title_key": normalize_compare_text(title),
+    }
+
+
+def submitted_item_record(item: dict[str, Any]) -> dict[str, str]:
+    author = str(item.get("author") or item.get("nickname") or "").strip()
+    title = str(item.get("title") or item.get("name") or "").strip()
+    return {
+        "id": str(item.get("id") or item.get("note_id") or "").strip(),
+        "url": str(item.get("url") or "").strip(),
+        "author": author,
+        "title": title,
+        "key": f"{normalize_compare_text(author)}|{normalize_compare_text(title)}",
+        "title_key": normalize_compare_text(title),
+    }
+
+
+def compare_xhs_library(items: list[dict[str, Any]], work_path: Path) -> dict[str, Any]:
+    submitted = [submitted_item_record(item) for item in items if isinstance(item, dict)]
+    submitted = [item for item in submitted if item["title_key"]]
+    local: list[dict[str, str]] = []
+    if work_path.exists() and work_path.is_dir():
+        for path in work_path.iterdir():
+            if path.is_dir():
+                local.append(local_folder_record(path))
+    local_by_key = {item["key"]: item for item in local if item["key"]}
+    local_by_title: dict[str, list[dict[str, str]]] = {}
+    for item in local:
+        if item["title_key"]:
+            local_by_title.setdefault(item["title_key"], []).append(item)
+
+    matched_local_folders: set[str] = set()
+    matched: list[dict[str, Any]] = []
+    missing: list[dict[str, Any]] = []
+    for item in submitted:
+        local_item = local_by_key.get(item["key"])
+        if local_item is None:
+            candidates = local_by_title.get(item["title_key"], [])
+            local_item = candidates[0] if candidates else None
+        if local_item is None:
+            missing.append(item)
+            continue
+        matched_local_folders.add(local_item["folder"])
+        matched.append({**item, "folder": local_item["folder"]})
+    extra = [item for item in local if item["folder"] not in matched_local_folders]
+    return {
+        "submitted_count": len(submitted),
+        "local_count": len(local),
+        "matched_count": len(matched),
+        "missing_count": len(missing),
+        "extra_count": len(extra),
+        "matched": matched[:500],
+        "missing": missing[:500],
+        "extra": extra[:500],
+        "work_path": str(work_path),
+        "checked_at": now_iso(),
+    }
+
+
 def xhs_api_segment_has_failure(text: str) -> bool:
     return any(marker in str(text or "") for marker in XHS_API_FAILURE_MARKERS)
 
@@ -458,6 +536,38 @@ class Store:
                 (error[-2000:], retry_after, now_iso(), note_id),
             )
 
+    def mark_pending(self, note_ids: list[str]) -> int:
+        cleaned = [str(note_id or "").strip() for note_id in note_ids if str(note_id or "").strip()]
+        if not cleaned:
+            return 0
+        with self._lock, self.connect() as conn:
+            placeholders = ",".join("?" for _ in cleaned)
+            cur = conn.execute(
+                f"""
+                update notes
+                set status='pending', retry_after=null, last_error='', updated_at=?
+                where note_id in ({placeholders}) and status in ('failed', 'retry')
+                """,
+                [now_iso(), *cleaned],
+            )
+            return int(cur.rowcount or 0)
+
+    def mark_pending_for_statuses(self, statuses: list[str]) -> int:
+        allowed = [status for status in statuses if status in {"failed", "retry"}]
+        if not allowed:
+            return 0
+        with self._lock, self.connect() as conn:
+            placeholders = ",".join("?" for _ in allowed)
+            cur = conn.execute(
+                f"""
+                update notes
+                set status='pending', retry_after=null, last_error='', updated_at=?
+                where status in ({placeholders})
+                """,
+                [now_iso(), *allowed],
+            )
+            return int(cur.rowcount or 0)
+
     def recent_notes(self, limit: int = 200) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute("select * from notes order by updated_at desc limit ?", (limit,)).fetchall()
@@ -537,6 +647,7 @@ class App:
         self.running = False
         self.run_lock = threading.Lock()
         self.last_run_message = ""
+        self.last_library_compare: dict[str, Any] = {}
         self.progress: dict[str, Any] = {"phase": "idle", "current_url": ""}
         self.progress_lock = threading.Lock()
         sync_downloader_settings(self.config)
@@ -662,6 +773,32 @@ class App:
         self.log.write(self.last_run_message)
         return removed
 
+    def retry_note(self, note_id: str) -> bool:
+        changed = self.store.mark_pending([note_id])
+        if changed:
+            self.last_run_message = f"已重新加入重试：{note_id}"
+            self.log.write(self.last_run_message)
+        return changed > 0
+
+    def retry_errors(self) -> int:
+        changed = self.store.mark_pending_for_statuses(["failed", "retry"])
+        self.last_run_message = f"已将 {changed} 条错误记录重新加入队列"
+        self.log.write(self.last_run_message)
+        return changed
+
+    def compare_library(self, items: list[dict[str, Any]], source: str = "") -> dict[str, Any]:
+        settings = sync_downloader_settings(self.config)
+        work_path = Path(str(settings.get("work_path") or self.config.get("work_path") or "/xhs"))
+        result = compare_xhs_library(items, work_path)
+        result["source"] = source
+        self.last_library_compare = result
+        self.log.write(
+            "小红书本地目录对比："
+            f"网页 {result['submitted_count']}，本地 {result['local_count']}，"
+            f"缺少 {result['missing_count']}，本地多余 {result['extra_count']}"
+        )
+        return result
+
     def status(self) -> dict[str, Any]:
         log_limit = int(self.config.get("web", {}).get("log_lines", 5000))
         api_log_path = Path(str(self.config.get("xhs_api_log_file") or "/xhs-volume/xhs-api.log"))
@@ -676,6 +813,7 @@ class App:
             "xhs_api_logs": tail_file(api_log_path, min(log_limit, 3000)),
             "settings_cookie": cookie_summary_from_settings(self.config),
             "last_run_message": self.last_run_message,
+            "library_compare": self.last_library_compare,
             "progress": self.get_progress(),
         }
 
@@ -705,8 +843,10 @@ def html_page(app: App) -> str:
 .status-failed .status-dot{background:var(--danger)}
 button.danger{background:var(--danger)}
 button.danger:hover{background:#8f1d14;box-shadow:0 6px 16px rgba(180,35,24,.18)}
+.compare-columns{display:grid;grid-template-columns:1fr 1fr;gap:12px}.compare-list{max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:8px;background:var(--panel-soft);padding:10px}
+.compare-list h3{font-size:14px;margin:0 0 8px}.compare-list ul{margin:0;padding-left:18px}.compare-list li{margin:4px 0;overflow-wrap:anywhere}
 pre{max-height:680px}
-@media(max-width:900px){.split{grid-template-columns:1fr}}
+@media(max-width:900px){.split,.compare-columns{grid-template-columns:1fr}}
         """
     )
     return f"""<!doctype html>
@@ -774,7 +914,22 @@ pre{max-height:680px}
     </div>
     <section>
       <h2>错误列表</h2>
-      <div class="wide-table"><table><thead><tr><th>作品</th><th>状态</th><th>次数</th><th>下次重试</th><th>更新时间</th><th>错误</th></tr></thead><tbody id="errorsBody"></tbody></table></div>
+      <div class="actions"><button class="secondary" id="retryAllErrors" type="button">全部重试</button></div>
+      <div class="wide-table"><table><thead><tr><th>作品</th><th>状态</th><th>次数</th><th>下次重试</th><th>更新时间</th><th>错误</th><th>操作</th></tr></thead><tbody id="errorsBody"></tbody></table></div>
+    </section>
+    <section>
+      <h2>本地目录对比</h2>
+      <div class="progress-grid">
+        <div class="metric"><span class="label">网页提交</span><strong id="compareSubmitted">0</strong></div>
+        <div class="metric"><span class="label">本地文件夹</span><strong id="compareLocal">0</strong></div>
+        <div class="metric"><span class="label">本地还没有</span><strong id="compareMissing">0</strong></div>
+        <div class="metric"><span class="label">本地多余</span><strong id="compareExtra">0</strong></div>
+      </div>
+      <div class="help" id="compareMeta">等待 userscript 提交点赞/收藏名单。</div>
+      <div class="compare-columns">
+        <div class="compare-list"><h3>本地还没有</h3><ul id="missingList"></ul></div>
+        <div class="compare-list"><h3>本地多余</h3><ul id="extraList"></ul></div>
+      </div>
     </section>
     <section>
       <h2>最近链接</h2>
@@ -813,6 +968,19 @@ pre{max-height:680px}
           <td>${{esc((n.last_error || "").slice(0, 240))}}</td>
         </tr>`).join("");
     }}
+    async function postJson(url, payload) {{
+      const resp = await fetch(url, {{
+        method: "POST",
+        headers: {{"Content-Type": "application/json"}},
+        body: JSON.stringify(payload || {{}})
+      }});
+      if (!resp.ok) throw new Error(await resp.text());
+      return resp.json();
+    }}
+    async function retryNote(noteId) {{
+      await postJson("/api/retry-note", {{note_id: noteId}});
+      await refreshStatus();
+    }}
     function renderErrors(notes) {{
       $("errorsBody").innerHTML = (notes || []).map((n) => `
         <tr class="status-${{esc(n.status)}}">
@@ -822,7 +990,20 @@ pre{max-height:680px}
           <td>${{esc(retryTime(n.retry_after))}}</td>
           <td>${{esc(n.updated_at || "")}}</td>
           <td>${{esc((n.last_error || "").slice(0, 360))}}</td>
+          <td><button class="secondary retry-note" type="button" data-note-id="${{esc(n.note_id)}}">重试</button></td>
         </tr>`).join("");
+    }}
+    function renderCompare(compare) {{
+      compare = compare || {{}};
+      $("compareSubmitted").textContent = compare.submitted_count || 0;
+      $("compareLocal").textContent = compare.local_count || 0;
+      $("compareMissing").textContent = compare.missing_count || 0;
+      $("compareExtra").textContent = compare.extra_count || 0;
+      $("compareMeta").textContent = compare.checked_at
+        ? `检查时间：${{compare.checked_at}}；目录：${{compare.work_path || ""}}；来源：${{compare.source || ""}}`
+        : "等待 userscript 提交点赞/收藏名单。";
+      $("missingList").innerHTML = (compare.missing || []).map((item) => `<li>${{esc(item.author)}}_${{esc(item.title)}}</li>`).join("");
+      $("extraList").innerHTML = (compare.extra || []).map((item) => `<li>${{esc(item.folder || item.title || "")}}</li>`).join("");
     }}
     function renderCookie(summary) {{
       const missing = (summary?.missing_required || []).join(", ") || "无";
@@ -844,6 +1025,7 @@ pre{max-height:680px}
         $("currentUrl").textContent = progress.current_url ? `当前：${{progress.current_url}}` : (data.last_run_message || "");
         renderErrors(data.error_notes || []);
         renderNotes(data.notes || []);
+        renderCompare(data.library_compare || {{}});
         renderCookie(data.settings_cookie || {{}});
         updateLogs("apiLogBox", data.xhs_api_logs || []);
         updateLogs("logBox", data.logs || []);
@@ -851,6 +1033,25 @@ pre{max-height:680px}
         $("runningPill").textContent = `刷新失败：${{error}}`;
       }}
     }}
+    document.addEventListener("click", async (event) => {{
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      if (target.classList.contains("retry-note")) {{
+        target.setAttribute("disabled", "disabled");
+        try {{ await retryNote(target.dataset.noteId || ""); }} catch (error) {{ alert(`重试失败：${{error}}`); }}
+        target.removeAttribute("disabled");
+      }}
+      if (target.id === "retryAllErrors") {{
+        target.setAttribute("disabled", "disabled");
+        try {{
+          await postJson("/api/retry-errors", {{}});
+          await refreshStatus();
+        }} catch (error) {{
+          alert(`批量重试失败：${{error}}`);
+        }}
+        target.removeAttribute("disabled");
+      }}
+    }});
     refreshStatus();
     setInterval(refreshStatus, 3000);
   </script>
@@ -922,6 +1123,33 @@ def make_handler(app: App):
                         "invalid": result.invalid,
                     },
                 )
+                return
+            if self.path == "/api/retry-note":
+                try:
+                    payload = json.loads(raw or "{}") if "application/json" in content_type else {}
+                except json.JSONDecodeError as error:
+                    send_json(self, {"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+                    return
+                changed = app.retry_note(str(payload.get("note_id") or ""))
+                if changed:
+                    RUN_NOW_EVENT.set()
+                send_json(self, {"ok": changed, "message": "已重新加入队列" if changed else "未找到可重试记录"})
+                return
+            if self.path == "/api/retry-errors":
+                changed = app.retry_errors()
+                if changed:
+                    RUN_NOW_EVENT.set()
+                send_json(self, {"ok": True, "changed": changed})
+                return
+            if self.path == "/api/library-compare":
+                try:
+                    payload = json.loads(raw or "{}") if "application/json" in content_type else {}
+                except json.JSONDecodeError as error:
+                    send_json(self, {"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+                    return
+                items = payload.get("items") if isinstance(payload.get("items"), list) else []
+                result = app.compare_library(items, str(payload.get("source") or payload.get("kind") or ""))
+                send_json(self, {"ok": True, "result": result})
                 return
             form = parse_qs(raw)
             if self.path == "/run":

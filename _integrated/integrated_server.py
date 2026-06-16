@@ -32,7 +32,7 @@ except ModuleNotFoundError:
 
 PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
-APP_VERSION = os.environ.get("APP_VERSION", "v1.6.4-dev")
+APP_VERSION = os.environ.get("APP_VERSION", "v1.6.5-dev")
 XHS_QUEUE_FILE = Path(os.environ.get("XHS_QUEUE_FILE", "/queue/xhs/links.txt"))
 DOUYIN_CONFIG_PATH = Path(os.environ.get("DOUYIN_CONFIG_PATH", "/config/douyin/config.json"))
 DOUYIN_COOKIE_YAML_PLACEHOLDER = "__DOUYIN_COOKIE_PLACEHOLDER__"
@@ -675,6 +675,40 @@ def trigger_xhs_worker_run() -> dict[str, Any]:
         conn.close()
 
 
+def post_xhs_worker(path: str, payload: dict[str, Any], timeout: int = 30) -> dict[str, Any]:
+    svc = SERVICES["xhs"]
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    conn = http.client.HTTPConnection("127.0.0.1", int(svc["port"]), timeout=timeout)
+    try:
+        conn.request("POST", path, body=body, headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        raw = resp.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(raw or "{}")
+        except json.JSONDecodeError:
+            parsed = {"body": raw[:1000]}
+        parsed.setdefault("ok", 200 <= resp.status < 300)
+        parsed.setdefault("status", resp.status)
+        return parsed
+    except (OSError, TimeoutError, http.client.HTTPException) as error:
+        return {"ok": False, "status": 0, "error": str(error)}
+    finally:
+        conn.close()
+
+
+def compare_xhs_library_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    items = payload.get("items") if isinstance(payload.get("items"), list) else []
+    return post_xhs_worker(
+        "/api/library-compare",
+        {
+            "items": items,
+            "source": str(payload.get("source") or payload.get("kind") or ""),
+            "page": str(payload.get("page") or ""),
+            "submitted_at": str(payload.get("submitted_at") or ""),
+        },
+    )
+
+
 def page(message: str = "") -> bytes:
     status_data = service_status()
     nav_items = ""
@@ -1000,11 +1034,37 @@ class Handler(BaseHTTPRequestHandler):
                     else "存在无效链接或未识别到有效小红书链接。"
                 ),
             }
+            compare_result: dict[str, Any] | None = None
+            if isinstance(payload.get("items"), list) and payload["items"]:
+                compare_result = compare_xhs_library_from_payload(payload)
+                result["library_compare"] = compare_result.get("result", compare_result)
             log(
                 f"浏览器脚本提交小红书链接：valid={len(urls)} accepted={len(accepted)} "
-                f"skipped={len(skipped)} invalid={len(invalid)} trigger={trigger_result.get('ok')}"
+                f"skipped={len(skipped)} invalid={len(invalid)} trigger={trigger_result.get('ok')} "
+                f"compare={compare_result.get('ok') if compare_result else 'skip'}"
             )
             self.send_json_payload(result)
+            return
+        if split.path == "/api/xhs/library":
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            if length > 500000:
+                self.send_json_payload({"ok": False, "error": "请求体过大"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+                return
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            except json.JSONDecodeError as error:
+                self.send_json_payload({"ok": False, "error": f"JSON 解析失败：{error}"}, HTTPStatus.BAD_REQUEST)
+                return
+            if not isinstance(payload, dict):
+                self.send_json_payload({"ok": False, "error": "请求体必须是 JSON 对象"}, HTTPStatus.BAD_REQUEST)
+                return
+            result = compare_xhs_library_from_payload(payload)
+            status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_GATEWAY
+            log(
+                "浏览器脚本提交小红书名单对比："
+                f"items={len(payload.get('items') or [])} ok={result.get('ok')}"
+            )
+            self.send_json_payload(result, status)
             return
         for key, svc in SERVICES.items():
             if split.path.startswith(svc["path"]):

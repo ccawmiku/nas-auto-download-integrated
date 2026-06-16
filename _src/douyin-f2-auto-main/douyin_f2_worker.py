@@ -977,15 +977,15 @@ def html_page(app: App) -> str:
         jobs_html += f"""
         <div class="job">
           <label><input type="checkbox" name="enabled_{index}"{checked}> {html.escape(str(job.get("label") or key))}</label>
-          <input name="name_{index}" value="{html.escape(key)}">
-          <input name="mode_{index}" value="{html.escape(str(job.get("mode") or ""))}">
+          <input type="hidden" name="name_{index}" value="{html.escape(key)}">
+          <input type="hidden" name="mode_{index}" value="{html.escape(str(job.get("mode") or ""))}">
           <input name="url_{index}" value="{html.escape(str(job.get("url") or ""))}">
           <button formaction="/run-job?name={html.escape(key)}" type="submit">运行</button>
         </div>"""
     page_style = app_css(
         """
 .grid{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}
-.job{display:grid;grid-template-columns:120px 130px 120px minmax(260px,1fr) 72px;gap:8px;align-items:center;margin:8px 0}
+.job{display:grid;grid-template-columns:150px minmax(260px,1fr) 72px;gap:8px;align-items:center;margin:8px 0}
 @media(max-width:820px){.job{grid-template-columns:1fr}}
 """
     )
