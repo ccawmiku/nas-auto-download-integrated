@@ -1,6 +1,6 @@
 FROM mcr.microsoft.com/playwright/python:v1.56.0-noble
 
-ARG APP_VERSION=v1.6.8-dev
+ARG APP_VERSION=v1.7.0-dev
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -21,6 +21,7 @@ COPY _src/XHS-Downloader-NAS-main /opt/nas-auto/xhs
 COPY _src/x-auto-download-nas-main /opt/nas-auto/x
 COPY _src/pixiv-auto-download-nas-main /opt/nas-auto/pixiv
 COPY _src/douyin-f2-auto-main /opt/nas-auto/douyin
+COPY _src/instagram-auto-download-nas-main /opt/nas-auto/instagram
 COPY _common/nas_auto_common /opt/nas-auto/nas_auto_common
 COPY _integrated/integrated_server.py /opt/nas-auto/integrated_server.py
 

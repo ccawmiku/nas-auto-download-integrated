@@ -15,7 +15,7 @@ services:
     restart: unless-stopped
 
   nas-auto-download:
-    image: ghcr.io/ccawmiku/nas-auto-download-integrated:v1.6.8-dev
+    image: ghcr.io/ccawmiku/nas-auto-download-integrated:v1.7.0-dev
     container_name: nas-auto-download
     depends_on:
       - xhs-api
@@ -38,4 +38,8 @@ services:
       - /volume2/docker/nas-auto-download-integrated/douyin/config:/config/douyin
       - /volume2/docker/nas-auto-download-integrated/douyin/f2/database:/state/douyin/f2
       - /volume2/qinlong-debian/F2DL:/F2DL
+      - /volume2/docker/nas-auto-download-integrated/instagram/config:/config/instagram
+      - /volume2/docker/nas-auto-download-integrated/instagram/queue:/queue/instagram
+      - /volume2/docker/nas-auto-download-integrated/instagram/state:/state/instagram
+      - /volume2/se-p/instagram:/downloads/instagram
     restart: unless-stopped

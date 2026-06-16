@@ -32,8 +32,9 @@ except ModuleNotFoundError:
 
 PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
-APP_VERSION = os.environ.get("APP_VERSION", "v1.6.8-dev")
+APP_VERSION = os.environ.get("APP_VERSION", "v1.7.0-dev")
 XHS_QUEUE_FILE = Path(os.environ.get("XHS_QUEUE_FILE", "/queue/xhs/links.txt"))
+INSTAGRAM_QUEUE_FILE = Path(os.environ.get("INSTAGRAM_QUEUE_FILE", "/queue/instagram/links.txt"))
 MAX_XHS_API_BODY_BYTES = 5_000_000
 DOUYIN_CONFIG_PATH = Path(os.environ.get("DOUYIN_CONFIG_PATH", "/config/douyin/config.json"))
 DOUYIN_COOKIE_YAML_PLACEHOLDER = "__DOUYIN_COOKIE_PLACEHOLDER__"
@@ -73,6 +74,7 @@ SERVICES = {
     "x": {"name": "X", "port": 18082, "path": "/x/", "config": "/config/x/config.json"},
     "pixiv": {"name": "Pixiv", "port": 18083, "path": "/pixiv/", "config": "/config/pixiv/config.json"},
     "douyin": {"name": "抖音", "port": 18084, "path": "/douyin/", "config": "/config/douyin/config.json"},
+    "instagram": {"name": "Instagram", "port": 18085, "path": "/instagram/", "config": "/config/instagram/config.json"},
 }
 
 DOUYIN_REFERENCE_COOKIE_ORDER = (
@@ -186,12 +188,17 @@ XHS_NOTE_URL_RE = re.compile(
     r"https?://(?:www\.)?(?:xiaohongshu\.com|xhslink\.com)/[^\s\"'<>]+",
     re.IGNORECASE,
 )
+INSTAGRAM_URL_RE = re.compile(
+    r"https?://(?:www\.)?instagram\.com/(?:p|reel|tv)/[A-Za-z0-9_-]+/?[^\s\"'<>]*",
+    re.IGNORECASE,
+)
 
 
 processes: list[tuple[str, subprocess.Popen]] = []
 log_lines: list[str] = []
 log_lock = threading.Lock()
 xhs_queue_lock = threading.Lock()
+instagram_queue_lock = threading.Lock()
 
 
 def log(message: str) -> None:
@@ -291,16 +298,30 @@ def ensure_configs() -> None:
             "web": {"host": "127.0.0.1", "port": 18084},
         },
     )
+    ensure_config(
+        Path("/config/instagram/config.json"),
+        ROOT / "instagram" / "config.example.json",
+        {
+            "database": "/state/instagram/instagram_queue.sqlite3",
+            "queue_files": ["/queue/instagram/links.txt"],
+            "download_dir": "/downloads/instagram",
+            "cookie_file": "/config/instagram/instagram_cookies.txt",
+            "web": {"host": "127.0.0.1", "port": 18085},
+        },
+    )
     for path in [
         Path("/queue/xhs"),
+        Path("/queue/instagram"),
         Path("/state/xhs"),
         Path("/state/x"),
         Path("/state/pixiv"),
         Path("/state/douyin/f2"),
+        Path("/state/instagram"),
         Path("/downloads/x/images"),
         Path("/downloads/x/videos"),
         Path("/downloads/x/downloads-metadata"),
         Path("/downloads/pixiv"),
+        Path("/downloads/instagram"),
         Path("/F2DL"),
     ]:
         path.mkdir(parents=True, exist_ok=True)
@@ -374,6 +395,11 @@ def start_children() -> None:
         "douyin-worker",
         [sys.executable, "/opt/nas-auto/douyin/douyin_f2_worker.py", "--config", "/config/douyin/config.json"],
         "/opt/nas-auto/douyin",
+    )
+    start_process(
+        "instagram-worker",
+        [sys.executable, "/opt/nas-auto/instagram/instagram_auto_worker.py", "--config", "/config/instagram/config.json"],
+        "/opt/nas-auto/instagram",
     )
 
 
@@ -662,8 +688,78 @@ def append_xhs_queue_links(urls: list[str]) -> dict[str, Any]:
         }
 
 
+def extract_instagram_urls_from_text(text: str) -> list[str]:
+    urls: list[str] = []
+    for match in INSTAGRAM_URL_RE.finditer(str(text or "")):
+        raw = match.group(0).strip().rstrip("),.;，。；").split("#", 1)[0]
+        permalink = re.search(r"instagram\.com/((?:p|reel|tv)/[A-Za-z0-9_-]+)", raw, re.IGNORECASE)
+        if permalink:
+            urls.append(f"https://www.instagram.com/{permalink.group(1)}/")
+    return dedupe_ordered(urls)
+
+
+def normalize_instagram_link_payload(payload: dict[str, Any]) -> tuple[list[str], list[str]]:
+    candidates: list[str] = []
+    if isinstance(payload.get("urls"), list):
+        candidates.extend(str(item) for item in payload["urls"])
+    if payload.get("url"):
+        candidates.append(str(payload["url"]))
+    if payload.get("text"):
+        candidates.extend(extract_instagram_urls_from_text(str(payload["text"])))
+
+    urls: list[str] = []
+    invalid: list[str] = []
+    for raw in candidates:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        found = extract_instagram_urls_from_text(value)
+        if found:
+            urls.extend(found)
+        else:
+            invalid.append(value[:200])
+    return dedupe_ordered(urls), invalid
+
+
+def append_instagram_queue_links(urls: list[str]) -> dict[str, Any]:
+    INSTAGRAM_QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with instagram_queue_lock:
+        existing: set[str] = set()
+        if INSTAGRAM_QUEUE_FILE.exists():
+            try:
+                existing.update(extract_instagram_urls_from_text(INSTAGRAM_QUEUE_FILE.read_text(encoding="utf-8-sig")))
+            except OSError:
+                existing = set()
+        accepted = [url for url in urls if url not in existing]
+        if accepted:
+            with INSTAGRAM_QUEUE_FILE.open("a", encoding="utf-8") as handle:
+                if INSTAGRAM_QUEUE_FILE.stat().st_size > 0:
+                    handle.write("\n")
+                handle.write("\n".join(accepted))
+                handle.write("\n")
+        return {
+            "accepted": accepted,
+            "skipped": [url for url in urls if url in existing],
+            "queue_file": str(INSTAGRAM_QUEUE_FILE),
+        }
+
+
 def trigger_xhs_worker_run() -> dict[str, Any]:
     svc = SERVICES["xhs"]
+    conn = http.client.HTTPConnection("127.0.0.1", int(svc["port"]), timeout=10)
+    try:
+        conn.request("POST", "/api/run-now", body=b"{}", headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        body = resp.read().decode("utf-8", errors="replace")
+        return {"ok": 200 <= resp.status < 300, "status": resp.status, "body": body[:500]}
+    except (OSError, TimeoutError, http.client.HTTPException) as error:
+        return {"ok": False, "status": 0, "body": str(error)}
+    finally:
+        conn.close()
+
+
+def trigger_service_run(service_key: str) -> dict[str, Any]:
+    svc = SERVICES[service_key]
     conn = http.client.HTTPConnection("127.0.0.1", int(svc["port"]), timeout=10)
     try:
         conn.request("POST", "/api/run-now", body=b"{}", headers={"Content-Type": "application/json"})
@@ -1066,6 +1162,42 @@ class Handler(BaseHTTPRequestHandler):
                 f"items={len(payload.get('items') or [])} ok={result.get('ok')}"
             )
             self.send_json_payload(result, status)
+            return
+        if split.path == "/api/instagram/links":
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            if length > MAX_XHS_API_BODY_BYTES:
+                self.send_json_payload({"ok": False, "error": "请求体过大"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+                return
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            except json.JSONDecodeError as error:
+                self.send_json_payload({"ok": False, "error": f"JSON 解析失败：{error}"}, HTTPStatus.BAD_REQUEST)
+                return
+            if not isinstance(payload, dict):
+                self.send_json_payload({"ok": False, "error": "请求体必须是 JSON 对象"}, HTTPStatus.BAD_REQUEST)
+                return
+            urls, invalid = normalize_instagram_link_payload(payload)
+            queue_result = append_instagram_queue_links(urls)
+            trigger_result = trigger_service_run("instagram") if urls else {"ok": False, "status": 0, "body": "没有有效链接"}
+            accepted = queue_result["accepted"]
+            skipped = queue_result["skipped"]
+            ok = bool(urls) and not invalid and len(urls) == len(accepted) + len(skipped)
+            log(
+                f"浏览器脚本提交 Instagram 链接：valid={len(urls)} accepted={len(accepted)} "
+                f"skipped={len(skipped)} invalid={len(invalid)} trigger={trigger_result.get('ok')}"
+            )
+            self.send_json_payload(
+                {
+                    "ok": ok,
+                    "submitted": len(urls) + len(invalid),
+                    "valid": len(urls),
+                    "accepted": len(accepted),
+                    "skipped": len(skipped),
+                    "invalid": invalid,
+                    "queue_file": queue_result["queue_file"],
+                    "triggered": trigger_result,
+                }
+            )
             return
         for key, svc in SERVICES.items():
             if split.path.startswith(svc["path"]):

@@ -43,7 +43,7 @@ from xhs_auto_worker import (
 class IntegratedPageTests(unittest.TestCase):
     def test_home_page_includes_version_and_service_cards(self) -> None:
         body = integrated_server.page().decode("utf-8")
-        self.assertIn("v1.6.8-dev", body)
+        self.assertIn("v1.7.0-dev", body)
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)
@@ -297,6 +297,30 @@ class XhsSettingsTests(unittest.TestCase):
                 self.assertEqual(second["skipped"], [url1, url2])
             finally:
                 integrated_server.XHS_QUEUE_FILE = old_queue_file
+
+    def test_instagram_link_queue_accepts_and_deduplicates_browser_submissions(self) -> None:
+        old_queue_file = integrated_server.INSTAGRAM_QUEUE_FILE
+        with tempfile.TemporaryDirectory() as tmp:
+            integrated_server.INSTAGRAM_QUEUE_FILE = Path(tmp) / "links.txt"
+            try:
+                url1 = "https://www.instagram.com/reel/ABC123/"
+                url2 = "https://www.instagram.com/p/DEF456/?utm_source=ig_web_copy_link"
+                urls, invalid = integrated_server.normalize_instagram_link_payload(
+                    {"urls": [url1, "not-a-url"], "text": f"duplicate {url1} plus {url2}"}
+                )
+                self.assertEqual(urls, [url1, "https://www.instagram.com/p/DEF456/"])
+                self.assertEqual(invalid, ["not-a-url"])
+
+                first = integrated_server.append_instagram_queue_links(urls)
+                self.assertEqual(first["accepted"], [url1, "https://www.instagram.com/p/DEF456/"])
+                self.assertEqual(first["skipped"], [])
+                self.assertIn(url1, integrated_server.INSTAGRAM_QUEUE_FILE.read_text(encoding="utf-8"))
+
+                second = integrated_server.append_instagram_queue_links([url1, "https://www.instagram.com/p/DEF456/"])
+                self.assertEqual(second["accepted"], [])
+                self.assertEqual(second["skipped"], [url1, "https://www.instagram.com/p/DEF456/"])
+            finally:
+                integrated_server.INSTAGRAM_QUEUE_FILE = old_queue_file
 
 
 class PixivNetworkTests(unittest.TestCase):
