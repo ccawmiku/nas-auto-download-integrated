@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import html
 import json
 import os
@@ -26,7 +25,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import requests
-from playwright.async_api import async_playwright as _playwright_async_playwright
+from playwright.async_api import async_playwright
 
 COMMON_PATH = Path(__file__).resolve().parents[2] / "_common"
 if COMMON_PATH.exists():
@@ -45,69 +44,6 @@ TWEET_RE = re.compile(r"/([^/?#]+)/status/(\d+)")
 MEDIA_ID_RE = re.compile(r"/media/([^?./]+)(?:\.[a-zA-Z0-9]+)?")
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov"}
-
-
-@contextlib.contextmanager
-def browser_lock(log: Any | None = None):
-    lock_path = Path(os.environ.get("BROWSER_LOCK_PATH", "/tmp/nas-auto-browser.lock"))
-    wait_seconds = int(os.environ.get("BROWSER_LOCK_WAIT_SECONDS", "7200") or "7200")
-    poll_seconds = max(1, int(os.environ.get("BROWSER_LOCK_POLL_SECONDS", "10") or "10"))
-    deadline = time.time() + wait_seconds
-    fd: int | None = None
-    while fd is None:
-        try:
-            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, f"x-auto-downloader pid={os.getpid()} at={now_iso()}\n".encode("utf-8"))
-        except FileExistsError:
-            try:
-                if f"pid={os.getpid()}" in lock_path.read_text(encoding="utf-8", errors="ignore"):
-                    yield
-                    return
-            except OSError:
-                pass
-            if time.time() >= deadline:
-                raise TimeoutError(f"timed out waiting for browser lock: {lock_path}")
-            if log:
-                log.write(f"等待其他浏览器任务结束：{lock_path}")
-            time.sleep(poll_seconds)
-    try:
-        yield
-    finally:
-        if fd is not None:
-            os.close(fd)
-        try:
-            lock_path.unlink()
-        except FileNotFoundError:
-            pass
-
-
-class _LockedPlaywright:
-    def __init__(self, manager: Any):
-        self.manager = manager
-        self.lock_cm: Any | None = None
-
-    async def __aenter__(self) -> Any:
-        self.lock_cm = browser_lock()
-        self.lock_cm.__enter__()
-        try:
-            return await self.manager.__aenter__()
-        except Exception:
-            self.lock_cm.__exit__(*sys.exc_info())
-            self.lock_cm = None
-            raise
-
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> Any:
-        try:
-            return await self.manager.__aexit__(exc_type, exc, tb)
-        finally:
-            if self.lock_cm is not None:
-                self.lock_cm.__exit__(exc_type, exc, tb)
-                self.lock_cm = None
-
-
-def async_playwright() -> _LockedPlaywright:
-    return _LockedPlaywright(_playwright_async_playwright())
-
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "run_interval_hours": 12,
@@ -926,24 +862,23 @@ class BrowserCollector:
         cookies, _user_id = self._load_cookies()
         browser_cfg = self.config["browser"]
         timeout = int(browser_cfg.get("target_timeout_ms", 45000))
-        with browser_lock(self.log):
-            async with async_playwright() as p:
-                browser, context = await self._open_browser_context(p, cookies)
-                page = await context.new_page()
-                await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
-                try:
-                    self.log.write(f"打开单条推文页面：{fallback['url']}")
-                    await page.goto(fallback["url"], wait_until="domcontentloaded", timeout=timeout)
-                    await page.wait_for_timeout(random.randint(2500, 4200))
-                    rows = await self._collect_visible(page)
-                    for row in rows:
-                        if row["tweet_id"] == tweet_id:
-                            return row
-                    self.log.write("单条页面没有解析到媒体卡片，将回退到 yt-dlp 直接测试")
-                    return {**fallback, "has_video": True}
-                finally:
-                    await context.close()
-                    await browser.close()
+        async with async_playwright() as p:
+            browser, context = await self._open_browser_context(p, cookies)
+            page = await context.new_page()
+            await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+            try:
+                self.log.write(f"打开单条推文页面：{fallback['url']}")
+                await page.goto(fallback["url"], wait_until="domcontentloaded", timeout=timeout)
+                await page.wait_for_timeout(random.randint(2500, 4200))
+                rows = await self._collect_visible(page)
+                for row in rows:
+                    if row["tweet_id"] == tweet_id:
+                        return row
+                self.log.write("单条页面没有解析到媒体卡片，将回退到 yt-dlp 直接测试")
+                return {**fallback, "has_video": True}
+            finally:
+                await context.close()
+                await browser.close()
 
     async def collect(self) -> BrowserResult:
         cookies, user_id = self._load_cookies()
@@ -1763,11 +1698,10 @@ __APP_STYLE__
       <h2>Cookie</h2>
       <form method="post" action="/cookie">
         <div class="help">
-          推荐用浏览器扩展导出 X/Twitter 的 Netscape 格式 cookies.txt。打开 x.com 并保持登录，点击类似 “Get cookies.txt LOCALLY” 的扩展，选择导出当前站点 cookies.txt。<br>
-          也支持直接粘贴浏览器开发者工具里复制出来的一行 Cookie header。保存后程序会写入 <code>/config/x_cookies.txt</code>。
+          打开 x.com 并保持登录，从浏览器开发者工具复制请求里的 Cookie header，粘贴后保存。程序会写入 <code>/config/x_cookies.txt</code>。
         </div>
-        <label>粘贴 cookies.txt 内容或一行 Cookie header</label>
-        <textarea name="cookie_text" placeholder="# Netscape HTTP Cookie File..."></textarea>
+        <label>粘贴 Cookie header</label>
+        <textarea name="cookie_text" placeholder="auth_token=...; ct0=..."></textarea>
         <div class="actions"><button type="submit">保存 Cookie</button></div>
       </form>
       <div class="help" id="cookieSummary">Cookie 状态读取中...</div>

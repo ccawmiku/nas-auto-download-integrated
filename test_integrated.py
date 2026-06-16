@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT / "_src" / "XHS-Downloader-NAS-main"))
 import integrated_server
 from douyin_f2_worker import (
     DOUYIN_REFERENCE_COOKIE_ORDER,
+    F2SkipStopGuard,
     build_f2_runtime_conf,
     cookie_summary,
     normalize_cookie_text,
@@ -27,6 +28,7 @@ from douyin_f2_worker import (
 from pixiv_auto_worker import classify_error, safe_extract_zip
 from xhs_auto_worker import (
     cookie_summary_from_settings,
+    is_transient_xhs_failure,
     save_settings_cookie,
     sync_downloader_settings,
     xhs_api_segment_has_failure,
@@ -36,13 +38,15 @@ from xhs_auto_worker import (
 class IntegratedPageTests(unittest.TestCase):
     def test_home_page_includes_version_and_service_cards(self) -> None:
         body = integrated_server.page().decode("utf-8")
-        self.assertIn("v1.6.2-dev", body)
+        self.assertIn("v1.6.3-dev", body)
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)
-        self.assertIn("上传 cookies.txt", body)
-        self.assertIn("粘贴 Cookie 内容", body)
-        self.assertIn("预览差异", body)
+        self.assertIn("运行总览", body)
+        self.assertIn("下次运行倒计时", body)
+        self.assertNotIn("上传 cookies.txt", body)
+        self.assertNotIn("Cookie 导入", body)
+        self.assertNotIn("预览差异", body)
         self.assertNotIn('value="xhs"', body)
         self.assertIn("overflow-wrap:anywhere", body.replace(" ", ""))
         self.assertNotIn("__APP_STYLE__", body)
@@ -53,113 +57,11 @@ class IntegratedPageTests(unittest.TestCase):
         self.assertNotIn("返回统一主页", text)
         self.assertIn("<main>ok</main>", text)
 
-    def test_imports_douyin_cookie_from_netscape_export(self) -> None:
-        old_rule = integrated_server.SITE_RULES["douyin"]
-        old_config_path = integrated_server.DOUYIN_CONFIG_PATH
-        with tempfile.TemporaryDirectory() as tmp:
-            output = Path(tmp) / "douyin_cookie.txt"
-            config_path = Path(tmp) / "config.json"
-            f2_dir = Path(tmp) / "f2"
-            config_path.write_text(
-                '{"f2_config_dir": "%s"}' % str(f2_dir).replace("\\", "\\\\"),
-                encoding="utf-8",
-            )
-            integrated_server.SITE_RULES["douyin"] = dict(old_rule, output=output)
-            integrated_server.DOUYIN_CONFIG_PATH = config_path
-            try:
-                result = integrated_server.import_all_cookie(
-                    ".douyin.com\tTRUE\t/\tTRUE\t1999999999\tttwid\tabc\n"
-                    ".douyin.com\tTRUE\t/\tTRUE\t1999999999\tsessionid\tdef\n"
-                    ".douyin.com\tTRUE\t/\tTRUE\t1999999999\tcustom_douyin_cookie\tghi\n"
-                    ".x.com\tTRUE\t/\tTRUE\t1999999999\tauth_token\tnope\n",
-                    targets=["douyin"],
-                )
-            finally:
-                integrated_server.SITE_RULES["douyin"] = old_rule
-                integrated_server.DOUYIN_CONFIG_PATH = old_config_path
-            self.assertEqual(result["douyin"]["count"], 2)
-            self.assertEqual(output.read_text(encoding="utf-8"), "cookie: sessionid=def;\n  ttwid=abc\n")
-            self.assertIn("  cookie: sessionid=def;\n    ttwid=abc\n", (f2_dir / "like.yaml").read_text(encoding="utf-8"))
-            self.assertIn("  cookie: sessionid=def;\n    ttwid=abc\n", (f2_dir / "collection.yaml").read_text(encoding="utf-8"))
-
-    def test_imports_douyin_cookie_from_app_yaml_segment(self) -> None:
-        old_rule = integrated_server.SITE_RULES["douyin"]
-        old_config_path = integrated_server.DOUYIN_CONFIG_PATH
-        with tempfile.TemporaryDirectory() as tmp:
-            output = Path(tmp) / "douyin_cookie.txt"
-            config_path = Path(tmp) / "config.json"
-            f2_dir = Path(tmp) / "f2"
-            config_path.write_text(
-                '{"f2_config_dir": "%s"}' % str(f2_dir).replace("\\", "\\\\"),
-                encoding="utf-8",
-            )
-            integrated_server.SITE_RULES["douyin"] = dict(old_rule, output=output)
-            integrated_server.DOUYIN_CONFIG_PATH = config_path
-            try:
-                result = integrated_server.import_all_cookie(
-                    "cookie: sessionid=abc;\n"
-                    "  ttwid=def;\n"
-                    "  msToken=ghi;\n"
-                    "  random_key=keepme;\n"
-                    "naming: '{create}-{nickname}-{aweme_id}'\n",
-                    targets=["douyin"],
-                )
-            finally:
-                integrated_server.SITE_RULES["douyin"] = old_rule
-                integrated_server.DOUYIN_CONFIG_PATH = old_config_path
-            self.assertEqual(result["douyin"]["count"], 2)
-            self.assertEqual(output.read_text(encoding="utf-8"), "cookie: sessionid=abc;\n  ttwid=def\n")
-            self.assertIn("  cookie: sessionid=abc;\n    ttwid=def\n", (f2_dir / "like.yaml").read_text(encoding="utf-8"))
-            self.assertIn("  cookie: sessionid=abc;\n    ttwid=def\n", (f2_dir / "collection.yaml").read_text(encoding="utf-8"))
-
-    def test_cookie_import_preview_compares_without_values(self) -> None:
-        old_rule = integrated_server.SITE_RULES["x"]
-        with tempfile.TemporaryDirectory() as tmp:
-            output = Path(tmp) / "x_cookies.txt"
-            output.write_text(
-                "# Netscape HTTP Cookie File\n"
-                ".x.com\tTRUE\t/\tTRUE\t1999999999\tauth_token\told\n"
-                ".x.com\tTRUE\t/\tTRUE\t1999999999\tct0\tsame\n",
-                encoding="utf-8",
-            )
-            integrated_server.SITE_RULES["x"] = dict(old_rule, output=output)
-            try:
-                preview = integrated_server.analyze_cookie_import(
-                    ".x.com\tTRUE\t/\tTRUE\t1999999999\tauth_token\tnew\n"
-                    ".x.com\tTRUE\t/\tTRUE\t1999999999\tct0\tsame\n"
-                    ".x.com\tTRUE\t/\tTRUE\t1999999999\ttwid\tadded\n"
-                )
-            finally:
-                integrated_server.SITE_RULES["x"] = old_rule
-            self.assertEqual(preview["x"]["incoming_count"], 3)
-            self.assertEqual(preview["x"]["existing_count"], 2)
-            self.assertEqual(preview["x"]["added_names"], ["twid"])
-            self.assertEqual(preview["x"]["changed_names"], ["auth_token"])
-
-    def test_cookie_import_respects_selected_targets(self) -> None:
-        old_x = integrated_server.SITE_RULES["x"]
-        with tempfile.TemporaryDirectory() as tmp:
-            x_output = Path(tmp) / "x_cookies.txt"
-            integrated_server.SITE_RULES["x"] = dict(old_x, output=x_output)
-            try:
-                result = integrated_server.import_all_cookie(
-                    ".x.com\tTRUE\t/\tTRUE\t1999999999\tauth_token\tx-token\n"
-                    ".xiaohongshu.com\tTRUE\t/\tTRUE\t1999999999\ta1\txhs-token\n",
-                    targets=["x", "xhs"],
-                )
-            finally:
-                integrated_server.SITE_RULES["x"] = old_x
-            self.assertIn("x", result)
-            self.assertNotIn("xhs", result)
-            self.assertTrue(x_output.exists())
-
-    def test_xhs_is_not_a_unified_cookie_import_target(self) -> None:
-        self.assertNotIn("xhs", integrated_server.COOKIE_IMPORT_KEYS)
-        self.assertEqual(integrated_server.normalize_import_targets(["xhs", "x"]), ["x"])
-        preview = integrated_server.analyze_cookie_import(
-            ".xiaohongshu.com\tTRUE\t/\tTRUE\t1999999999\ta1\ta1-value\n"
-        )
-        self.assertNotIn("xhs", preview)
+    def test_unified_cookie_import_routes_are_not_rendered(self) -> None:
+        body = integrated_server.page().decode("utf-8")
+        self.assertNotIn("/import-cookies", body)
+        self.assertNotIn("/api/cookie-preview", body)
+        self.assertNotIn("/api/cookie-import", body)
 
 
 class DouyinCookieTests(unittest.TestCase):
@@ -234,6 +136,24 @@ class DouyinCookieTests(unittest.TestCase):
         loaded = yaml.safe_load(rendered) or {}
         self.assertEqual(loaded["douyin"]["cookie"], "sessionid=abc; ttwid=def")
 
+    def test_f2_skip_guard_stops_after_consecutive_skipped_content_ids(self) -> None:
+        guard = F2SkipStopGuard(2)
+        self.assertFalse(guard.observe("INFO     [7647184464938078835] 非实况图集，跳过实况下载"))
+        self.assertFalse(guard.observe("INFO     [  跳过  ]：existing-file.webp"))
+        self.assertFalse(guard.observe("INFO     [7646424149867365032] 非实况图集，跳过实况下载"))
+        self.assertFalse(guard.observe("INFO     [  跳过  ]：existing-file.webp"))
+        self.assertTrue(guard.observe("INFO     [7646838488175797489] 非实况图集，跳过实况下载"))
+        self.assertEqual(guard.consecutive_skipped, 2)
+
+    def test_f2_skip_guard_resets_when_content_has_completed_file(self) -> None:
+        guard = F2SkipStopGuard(2)
+        guard.observe("INFO     [7647184464938078835] 非实况图集，跳过实况下载")
+        guard.observe("INFO     [  跳过  ]：existing-file.webp")
+        guard.observe("INFO     [7646424149867365032] 非实况图集，跳过实况下载")
+        guard.observe("INFO     [  完成  ]：new-file.mp4")
+        self.assertFalse(guard.observe("INFO     [7646838488175797489] 非实况图集，跳过实况下载"))
+        self.assertEqual(guard.consecutive_skipped, 0)
+
 
 class XhsSettingsTests(unittest.TestCase):
     def test_downloader_settings_preserves_cookie_and_applies_defaults(self) -> None:
@@ -268,6 +188,8 @@ class XhsSettingsTests(unittest.TestCase):
 
     def test_detects_xhs_api_internal_download_failures(self) -> None:
         self.assertTrue(xhs_api_segment_has_failure("网络异常，作品 下载失败，错误信息: HTTPStatusError('400')"))
+        self.assertTrue(is_transient_xhs_failure("错误信息: ReadTimeout('') 网络异常"))
+        self.assertTrue(is_transient_xhs_failure("RemoteProtocolError('peer closed connection')"))
         self.assertFalse(xhs_api_segment_has_failure("作品处理完成：69eddca4000000001f004e2d"))
 
     def test_xhs_link_queue_accepts_and_deduplicates_browser_submissions(self) -> None:

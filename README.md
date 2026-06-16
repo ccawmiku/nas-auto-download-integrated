@@ -25,7 +25,7 @@ docker compose up -d
 默认镜像：
 
 ```text
-ghcr.io/ccawmiku/nas-auto-download-integrated:v1.6.2-dev
+ghcr.io/ccawmiku/nas-auto-download-integrated:v1.6.3-dev
 ```
 
 每次发布都会同步更新 `docker-compose.yml` 里的镜像版本。NAS 端更新时执行 `docker compose pull && docker compose up -d`，避免复用旧镜像 tag。
@@ -64,22 +64,22 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.6.2-dev
 打开 `http://NAS_IP:14001` 后：
 
 - 统一首页回到轻量 Python 控制台，不再引入 React/Vue/shadcn-ui，也不需要 Node 构建阶段
-- 首页可以进入小红书、X、Pixiv、抖音四个管理页面
-- 首页会显示各子服务是否就绪；子服务启动中时统一首页仍会先打开
-- 首页可以粘贴浏览器插件导出的一整份全站 Cookie header
-- 首页也可以上传 `cookies.txt`，只解析内容，不保存原始上传文件
-- 导入器只处理 X 和抖音 Cookie；小红书 Cookie 不再走统一导入
-- Cookie 预览会提示 X/抖音关键字段缺失
+- 首页总览显示小红书、X、Pixiv、抖音的服务状态、运行状态、当前任务和下次运行倒计时
+- 服务入口只保留在侧边栏；子服务启动中时统一首页仍会先打开
+- 统一 Cookie 导入、从文件上传 `cookies.txt` 导入 Cookie 已移除
 - 小红书自动运行、无头浏览器采集、CloakBrowser 和旧统一 Cookie 导入已经完全移除
 - 小红书浏览器脚本可以把作品链接提交到 `http://NAS_IP:14001/api/xhs/links`，Docker 写入 `/queue/xhs/links.txt` 后才返回确认；网页确认完成后可以直接关闭
 - 小红书管理页可以单独粘贴 Cookie Header，并写入 JoeanAmier/XHS-Downloader 2.7 的 `/xhs-volume/settings.json` 里的 `cookie` 字段
-- 小红书管理页会显示浏览器脚本发来的队列、worker 日志和 `xhs-api` 日志；compose 会把 `xhs-api` 输出追加到 `/app/Volume/xhs-api.log`
+- 小红书管理页会显示浏览器脚本发来的队列、单独错误列表、worker 日志和 `xhs-api` 日志；compose 会把 `xhs-api` 输出追加到 `/app/Volume/xhs-api.log`
+- 小红书管理页提供红色“清空所有队列”按钮，会清理待处理/待重试/失败项并清空队列文件
+- 小红书遇到 `ReadTimeout`、`RemoteProtocolError`、`peer closed`、`网络异常` 等临时网络错误时会先标记为待重试，默认几分钟后自动重试
+- X 管理页支持单独粘贴 Cookie Header 保存，不再通过统一首页或文件上传导入
 - X 管理页会单独列出 `No video could be found in this tweet` 的失败链接，方便手动下载后删除记录
 - Pixiv 页面内可以生成登录链接、粘贴 callback/code、换取 refresh-token
 - 抖音页面会显示当前 f2 版本、PyPI 最新版本和检查时间，可手动触发版本检查
 - 抖音页面支持单独粘贴 `app.yaml` 里的 `cookie:` 段并直接保存，不依赖统一首页导入
 - 抖音日志会自动刷新，长行会换行，Cookie 和 URL 参数会做脱敏/截断
-- 抖音任务默认单任务 3 分钟超时，超过后会终止并记为 `timeout`
+- 抖音任务不再使用固定单任务超时；每个点赞/收藏项目按 f2 输出里的作品 ID 统计，连续 10 个作品都只有 `[跳过]`、没有 `[完成]` 时停止当前项目
 - 抖音页面会检查关键字段和参考 `app.yaml` 的 64 个字段，字段不满会直接提示风险
 - 抖音页面支持手动停止当前运行中的任务，停止后不会继续后续 job
 - 抖音运行目录会生成本地 `conf/conf.yaml` 并默认关闭 f2 的 Bark 推送，避免未配置 Bark 时额外报 405 噪音
@@ -121,7 +121,7 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.6.2-dev
 /volume2/docker/nas-auto-download-integrated/douyin/f2/database/douyin_videos.db
 ```
 
-如果之前在青龙面板里已经跑过 f2，把原来的 `douyin_users.db` 放到上面的 `database` 目录即可延续点赞/收藏记录；有 `douyin_videos.db` 也可以一起放进去，没有也能运行，f2 需要时会自行创建。抖音 Cookie 会以 UTF-8 写入 `/config/douyin/douyin_cookie.txt`，既支持统一主页从 `cookies.txt` 拆分导入，也支持在抖音页面直接粘贴 `app.yaml` 里的 `cookie:` 段单独保存。保存时会按本地参考 `app.yaml` 的字段顺序重新拼接，只保留抖音实际需要的项，并额外丢弃非 ASCII 值，避免 `httpx` 在构造 Cookie 请求头时因异常字符报错。`douyin_cookie.txt`、`like.yaml`、`collection.yaml` 都会严格按本地参考 `app.yaml` 的原始分组、换行、缩进和末行无分号规则输出；统一首页导入和抖音页单独保存都会立即同步重写 `like.yaml`、`collection.yaml`，并默认写入 `/F2DL`、`mode: like/collection`、`folderize: true`、`cover: false` 和 `{create}-{nickname}-{aweme_id}` 命名。
+如果之前在青龙面板里已经跑过 f2，把原来的 `douyin_users.db` 放到上面的 `database` 目录即可延续点赞/收藏记录；有 `douyin_videos.db` 也可以一起放进去，没有也能运行，f2 需要时会自行创建。抖音 Cookie 会以 UTF-8 写入 `/config/douyin/douyin_cookie.txt`，在抖音页面直接粘贴 `app.yaml` 里的 `cookie:` 段单独保存。保存时会按本地参考 `app.yaml` 的字段顺序重新拼接，只保留抖音实际需要的项，并额外丢弃非 ASCII 值，避免 `httpx` 在构造 Cookie 请求头时因异常字符报错。`douyin_cookie.txt`、`like.yaml`、`collection.yaml` 都会严格按本地参考 `app.yaml` 的原始分组、换行、缩进和末行无分号规则输出；抖音页保存会立即同步重写 `like.yaml`、`collection.yaml`，并默认写入 `/F2DL`、`mode: like/collection`、`folderize: true`、`cover: false` 和 `{create}-{nickname}-{aweme_id}` 命名。
 
 下载目录挂载为 `/volume2/qinlong-debian/F2DL:/F2DL`。f2 会按配置里的 `mode` 自动保存到：
 
@@ -130,12 +130,11 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.6.2-dev
 /volume2/qinlong-debian/F2DL/douyin/collection/昵称/作品文件夹
 ```
 
-## 浏览器性能保护
+## 自动停止与重试
 
-X 的自动采集仍会使用全局浏览器锁：
-
-- 同一时间只允许一个 X 无头浏览器采集任务运行
+- X 不再使用全局浏览器锁，只保留项目自身的运行锁，避免重复启动同一个 X 任务
 - X 的“连续已下载停止”按数据库 `done` 状态判断，迁移后不会因为旧文件路径变化而一直下翻
+- 小红书临时网络错误默认进入待重试队列，worker 会自动在稍后重跑
 - Pixiv OAuth/API/图片下载带网络重试；无 refresh-token 时不会自动运行下载任务，只保留网页等待配置
 
 ## 停旧容器后迁移

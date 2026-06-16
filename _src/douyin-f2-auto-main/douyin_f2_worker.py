@@ -45,6 +45,7 @@ DEFAULT_CONFIG_PATH = Path("/config/config.json")
 DEFAULT_CONFIG: dict[str, Any] = {
     "run_interval_hours": 12,
     "run_timeout_seconds": 180,
+    "fallback_stop_consecutive_skipped": 10,
     "cookie_file": "/config/douyin/douyin_cookie.txt",
     "f2_state_dir": "/state/douyin/f2",
     "f2_config_dir": "/config/douyin/f2",
@@ -229,6 +230,9 @@ SENSITIVE_COOKIE_NAMES = {
 }
 COOKIE_REQUIRED_NAMES = ("sessionid", "ttwid")
 COOKIE_YAML_PLACEHOLDER = "__DOUYIN_COOKIE_PLACEHOLDER__"
+DOUYIN_CONTENT_ID_RE = re.compile(r"\[(\d{10,})\]")
+DOUYIN_SKIP_RE = re.compile(r"\[\s*跳过\s*\]|跳过")
+DOUYIN_DONE_RE = re.compile(r"\[\s*完成\s*\]|完成")
 
 
 @dataclass
@@ -574,6 +578,51 @@ def version_tuple(value: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
+class F2SkipStopGuard:
+    def __init__(self, threshold: int):
+        self.threshold = max(0, int(threshold or 0))
+        self.current_id = ""
+        self.current_skipped = 0
+        self.current_done = 0
+        self.consecutive_skipped = 0
+        self.triggered = False
+        self.trigger_id = ""
+
+    def observe(self, line: str) -> bool:
+        if self.threshold <= 0 or self.triggered:
+            return False
+        match = DOUYIN_CONTENT_ID_RE.search(line)
+        if match:
+            self._finish_current()
+            self.current_id = match.group(1)
+            self.current_skipped = 0
+            self.current_done = 0
+        if self.current_id:
+            if DOUYIN_DONE_RE.search(line):
+                self.current_done += 1
+            if DOUYIN_SKIP_RE.search(line):
+                self.current_skipped += 1
+        return self.triggered
+
+    def finish(self) -> bool:
+        self._finish_current()
+        return self.triggered
+
+    def _finish_current(self) -> None:
+        if not self.current_id or self.triggered:
+            return
+        if self.current_skipped > 0 and self.current_done == 0:
+            self.consecutive_skipped += 1
+        elif self.current_done > 0:
+            self.consecutive_skipped = 0
+        if self.threshold > 0 and self.consecutive_skipped >= self.threshold:
+            self.triggered = True
+            self.trigger_id = self.current_id
+        self.current_id = ""
+        self.current_skipped = 0
+        self.current_done = 0
+
+
 class App:
     def __init__(self, config_path: Path):
         self.config_path = config_path
@@ -754,7 +803,8 @@ class App:
             self.log.write(f"{key}: {message}")
             return RunResult(key, "skipped", None, started_at, now_iso(), message)
         config_path = self.f2_config_for_job(job, index)
-        timeout_seconds = int(self.config.get("run_timeout_seconds") or 180)
+        fallback_stop = int(self.config.get("fallback_stop_consecutive_skipped") or 10)
+        guard = F2SkipStopGuard(fallback_stop)
         command = [sys.executable, "-m", "f2", "dy", "-c", str(config_path)]
         env = dict(os.environ)
         env.update({"PYTHONIOENCODING": "utf-8", "NO_COLOR": "1", "COLUMNS": "160"})
@@ -772,34 +822,39 @@ class App:
         with self.current_proc_lock:
             self.current_proc = proc
         assert proc.stdout is not None
-        timed_out = False
+        stopped_by_guard = False
 
         def reader() -> None:
+            nonlocal stopped_by_guard
             for raw in proc.stdout:
                 line = raw.rstrip()
                 if line:
                     self.log.write(f"{key}: {line}")
+                    if guard.observe(line) and proc.poll() is None:
+                        stopped_by_guard = True
+                        self.log.write(
+                            f"{key}: 连续 {guard.consecutive_skipped} 个作品均为跳过，"
+                            f"已停止本项目（最后作品 {guard.trigger_id}）"
+                        )
+                        try:
+                            proc.terminate()
+                        except Exception:
+                            pass
 
         thread = threading.Thread(target=reader, daemon=True)
         thread.start()
         try:
-            returncode = proc.wait(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            proc.terminate()
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-            returncode = proc.returncode
+            returncode = proc.wait()
         finally:
             with self.current_proc_lock:
                 if self.current_proc is proc:
                     self.current_proc = None
         thread.join(timeout=2)
-        if timed_out:
-            status = "timeout"
-            message = f"超过 {timeout_seconds}s，已终止"
+        if not stopped_by_guard and guard.finish():
+            stopped_by_guard = True
+        if stopped_by_guard:
+            status = "done"
+            message = f"连续 {guard.consecutive_skipped} 个作品均为跳过，已停止本项目"
         elif self.stop_run_event.is_set() and returncode not in {0, None}:
             status = "stopped"
             message = "已手动停止"
@@ -968,7 +1023,7 @@ def html_page(app: App) -> str:
 </div></section>
 <section><h2>配置</h2><form method="post" action="/settings">
 <div class="grid"><label>运行间隔（小时）<input name="run_interval_hours" type="number" min="0.1" step="0.1" value="{html.escape(str(cfg.get("run_interval_hours") or 12))}"></label>
-<label>单任务超时（秒）<input name="run_timeout_seconds" type="number" min="60" step="10" value="{html.escape(str(cfg.get("run_timeout_seconds") or 180))}"></label>
+<label>连续跳过作品停止数<input name="fallback_stop_consecutive_skipped" type="number" min="1" step="1" value="{html.escape(str(cfg.get("fallback_stop_consecutive_skipped") or 10))}"></label>
 <label>下载目录<input name="download_dir" value="{html.escape(str(cfg.get("download_dir") or ""))}"></label>
 <label>f2 数据目录<input name="f2_state_dir" value="{html.escape(str(cfg.get("f2_state_dir") or ""))}"></label></div>
 {jobs_html}
@@ -1090,13 +1145,16 @@ def make_handler(app: App):
                 except ValueError:
                     hours = 12.0
                 try:
-                    timeout_seconds = max(60, int((form.get("run_timeout_seconds") or ["180"])[0] or "180"))
+                    fallback_stop = max(
+                        1,
+                        int((form.get("fallback_stop_consecutive_skipped") or ["10"])[0] or "10"),
+                    )
                 except ValueError:
-                    timeout_seconds = 180
+                    fallback_stop = 10
                 app.save_config(
                     {
                         "run_interval_hours": hours,
-                        "run_timeout_seconds": timeout_seconds,
+                        "fallback_stop_consecutive_skipped": fallback_stop,
                         "download_dir": (form.get("download_dir") or [app.config.get("download_dir")])[0],
                         "f2_state_dir": (form.get("f2_state_dir") or [app.config.get("f2_state_dir")])[0],
                         "jobs": jobs,

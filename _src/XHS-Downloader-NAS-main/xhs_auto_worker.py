@@ -45,8 +45,21 @@ XHS_API_FAILURE_MARKERS = (
     "下载失败",
     "网络异常",
     "HTTPStatusError",
+    "ReadTimeout",
+    "RemoteProtocolError",
+    "peer closed",
     "Traceback",
     "Exception",
+)
+XHS_TRANSIENT_FAILURE_MARKERS = (
+    "网络异常",
+    "ReadTimeout",
+    "RemoteProtocolError",
+    "peer closed",
+    "ConnectionError",
+    "ConnectTimeout",
+    "Timeout",
+    "temporarily unavailable",
 )
 
 DEFAULT_DOWNLOADER_SETTINGS: dict[str, Any] = {
@@ -87,6 +100,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "max_items_per_run": 0,
     "api_skip_existing": True,
     "api_timeout_seconds": 120,
+    "network_retry_delay_seconds": 300,
     "sync_settings": {
         "path": "/xhs-volume/settings.json",
         "defaults": DEFAULT_DOWNLOADER_SETTINGS,
@@ -266,6 +280,10 @@ def xhs_api_segment_has_failure(text: str) -> bool:
     return any(marker in str(text or "") for marker in XHS_API_FAILURE_MARKERS)
 
 
+def is_transient_xhs_failure(text: str) -> bool:
+    return any(marker.lower() in str(text or "").lower() for marker in XHS_TRANSIENT_FAILURE_MARKERS)
+
+
 @dataclass
 class QueueResult:
     accepted: list[str]
@@ -297,11 +315,13 @@ class Store:
                     status text not null default 'pending',
                     attempts integer not null default 0,
                     last_error text,
+                    retry_after real,
                     first_seen_at text not null,
                     updated_at text not null,
                     downloaded_at text
                 );
                 create index if not exists idx_notes_status on notes(status);
+                create index if not exists idx_notes_retry_after on notes(retry_after);
                 create table if not exists runs (
                     id integer primary key autoincrement,
                     started_at text not null,
@@ -315,6 +335,10 @@ class Store:
                 );
                 """
             )
+            try:
+                conn.execute("alter table notes add column retry_after real")
+            except sqlite3.OperationalError:
+                pass
 
     def enqueue(self, urls: list[str], source: str = "queue") -> QueueResult:
         accepted: list[str] = []
@@ -356,16 +380,15 @@ class Store:
         return QueueResult(accepted=accepted, skipped=skipped, invalid=invalid)
 
     def pending(self, retry_failed: bool, max_attempts: int, limit: int) -> list[sqlite3.Row]:
-        where = ["status='pending'"]
+        now_ts = time.time()
+        where = ["status='pending'", "(status='retry' and coalesce(retry_after, 0) <= ?)"]
+        params: list[Any] = [now_ts]
         if retry_failed:
             if max_attempts > 0:
                 where.append("(status='failed' and attempts < ?)")
-                params: list[Any] = [max_attempts]
+                params.append(max_attempts)
             else:
                 where.append("status='failed'")
-                params = []
-        else:
-            params = []
         sql = f"select * from notes where {' or '.join(where)} order by first_seen_at asc"
         if limit > 0:
             sql += " limit ?"
@@ -403,7 +426,7 @@ class Store:
             conn.execute(
                 """
                 update notes
-                set status='done', attempts=attempts+1, last_error='', downloaded_at=?, updated_at=?
+                set status='done', attempts=attempts+1, last_error='', retry_after=null, downloaded_at=?, updated_at=?
                 where note_id=?
                 """,
                 (now_iso(), now_iso(), note_id),
@@ -414,15 +437,34 @@ class Store:
             conn.execute(
                 """
                 update notes
-                set status='failed', attempts=attempts+1, last_error=?, updated_at=?
+                set status='failed', attempts=attempts+1, last_error=?, retry_after=null, updated_at=?
                 where note_id=?
                 """,
                 (error[-2000:], now_iso(), note_id),
             )
 
+    def mark_retry(self, note_id: str, error: str, retry_after: float) -> None:
+        with self._lock, self.connect() as conn:
+            conn.execute(
+                """
+                update notes
+                set status='retry', attempts=attempts+1, last_error=?, retry_after=?, updated_at=?
+                where note_id=?
+                """,
+                (error[-2000:], retry_after, now_iso(), note_id),
+            )
+
     def recent_notes(self, limit: int = 200) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute("select * from notes order by updated_at desc limit ?", (limit,)).fetchall()
+            return [dict(row) for row in rows]
+
+    def error_notes(self, limit: int = 200) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "select * from notes where status in ('failed', 'retry') order by updated_at desc limit ?",
+                (limit,),
+            ).fetchall()
             return [dict(row) for row in rows]
 
     def recent_runs(self, limit: int = 50) -> list[dict[str, Any]]:
@@ -433,10 +475,25 @@ class Store:
     def counts(self) -> dict[str, int]:
         with self.connect() as conn:
             rows = conn.execute("select status, count(*) as n from notes group by status").fetchall()
-            result = {"pending": 0, "done": 0, "failed": 0}
+            result = {"pending": 0, "retry": 0, "done": 0, "failed": 0}
             for row in rows:
                 result[str(row["status"])] = int(row["n"])
             return result
+
+    def clear_queue(self) -> int:
+        with self._lock, self.connect() as conn:
+            row = conn.execute("select count(*) from notes where status in ('pending', 'retry', 'failed')").fetchone()
+            count = int(row[0]) if row else 0
+            conn.execute("delete from notes where status in ('pending', 'retry', 'failed')")
+            return count
+
+    def has_due_retry(self) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                "select 1 from notes where status='retry' and coalesce(retry_after, 0) <= ? limit 1",
+                (time.time(),),
+            ).fetchone()
+            return row is not None
 
 
 def append_queue_links(queue_file: Path, urls: list[str]) -> QueueResult:
@@ -497,10 +554,10 @@ class App:
     def run_once(self) -> dict[str, int]:
         if not self.run_lock.acquire(blocking=False):
             self.log.write("已有小红书下载任务正在运行，忽略本次触发。")
-            return {"queued": 0, "downloaded": 0, "skipped": 0, "failed": 0}
+            return {"queued": 0, "downloaded": 0, "skipped": 0, "failed": 0, "retry": 0}
         self.running = True
         run_id = self.store.begin_run()
-        stats = {"queued": 0, "downloaded": 0, "skipped": 0, "failed": 0}
+        stats = {"queued": 0, "downloaded": 0, "skipped": 0, "failed": 0, "retry": 0}
         message = ""
         try:
             self.reload_config()
@@ -524,6 +581,7 @@ class App:
             jitter = max(0.0, float(self.config.get("jitter_seconds", 0) or 0))
             api_url = str(self.config.get("api_url") or DEFAULT_CONFIG["api_url"])
             timeout = int(self.config.get("api_timeout_seconds", 120) or 120)
+            retry_delay = max(60, int(self.config.get("network_retry_delay_seconds", 300) or 300))
             skip = bool(self.config.get("api_skip_existing", True))
             xhs_api_log_path = Path(str(self.config.get("xhs_api_log_file") or "/xhs-volume/xhs-api.log"))
             for index, row in enumerate(pending, start=1):
@@ -544,6 +602,13 @@ class App:
                     stats["downloaded"] += 1
                     self.store.mark_downloaded(note_id)
                     self.log.write(f"下载提交成功：{note_id}")
+                elif is_transient_xhs_failure(detail):
+                    stats["retry"] += 1
+                    retry_after = time.time() + retry_delay
+                    self.store.mark_retry(note_id, detail, retry_after)
+                    self.log.write(
+                        f"下载遇到网络异常，已安排 {retry_delay // 60} 分钟后重试：{note_id} {detail}"
+                    )
                 else:
                     stats["failed"] += 1
                     self.store.mark_failed(note_id, detail)
@@ -555,7 +620,7 @@ class App:
                     STOP_EVENT.wait(sleep_for)
                     if STOP_EVENT.is_set():
                         break
-            message = f"完成：成功 {stats['downloaded']}，失败 {stats['failed']}。"
+            message = f"完成：成功 {stats['downloaded']}，待重试 {stats['retry']}，失败 {stats['failed']}。"
             self.store.finish_run(run_id, "done", stats, message)
             self.log.write(message)
             return stats
@@ -580,6 +645,19 @@ class App:
         append_queue_links(Path(str(queue_files[0])), result.accepted)
         return result
 
+    def clear_queue(self) -> int:
+        removed = self.store.clear_queue()
+        for raw_path in self.config.get("queue_files", []):
+            path = Path(str(raw_path))
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("", encoding="utf-8")
+            except OSError as error:
+                self.log.write(f"清空队列文件失败：{path} {error}")
+        self.last_run_message = f"已清空队列 {removed} 条"
+        self.log.write(self.last_run_message)
+        return removed
+
     def status(self) -> dict[str, Any]:
         log_limit = int(self.config.get("web", {}).get("log_lines", 5000))
         api_log_path = Path(str(self.config.get("xhs_api_log_file") or "/xhs-volume/xhs-api.log"))
@@ -589,12 +667,16 @@ class App:
             "counts": self.store.counts(),
             "runs": self.store.recent_runs(),
             "notes": self.store.recent_notes(),
+            "error_notes": self.store.error_notes(),
             "logs": self.log.lines()[-log_limit:],
             "xhs_api_logs": tail_file(api_log_path, min(log_limit, 3000)),
             "settings_cookie": cookie_summary_from_settings(self.config),
             "last_run_message": self.last_run_message,
             "progress": self.get_progress(),
         }
+
+    def has_due_retry(self) -> bool:
+        return self.store.has_due_retry()
 
 
 def html_page(app: App) -> str:
@@ -614,8 +696,11 @@ def html_page(app: App) -> str:
 .wide-table{overflow:auto}
 .status-dot{display:inline-block;width:8px;height:8px;border-radius:999px;margin-right:6px;background:var(--muted)}
 .status-pending .status-dot{background:var(--warn)}
+.status-retry .status-dot{background:var(--warn)}
 .status-done .status-dot{background:var(--ok)}
 .status-failed .status-dot{background:var(--danger)}
+button.danger{background:var(--danger)}
+button.danger:hover{background:#8f1d14;box-shadow:0 6px 16px rgba(180,35,24,.18)}
 pre{max-height:680px}
 @media(max-width:900px){.split{grid-template-columns:1fr}}
         """
@@ -639,9 +724,11 @@ pre{max-height:680px}
       <div class="actions">
         <form method="post" action="/run"><button type="submit">立即处理队列</button></form>
         <form method="post" action="/reload"><button class="secondary" type="submit">重新读取配置</button></form>
+        <form method="post" action="/clear-queue"><button class="danger" type="submit">清空所有队列</button></form>
       </div>
       <div class="progress-grid">
         <div class="metric"><span class="label">待处理</span><strong id="pendingMetric">0</strong></div>
+        <div class="metric"><span class="label">待重试</span><strong id="retryMetric">0</strong></div>
         <div class="metric"><span class="label">已完成</span><strong id="doneMetric">0</strong></div>
         <div class="metric"><span class="label">失败</span><strong id="failedMetric">0</strong></div>
         <div class="metric"><span class="label">当前</span><strong id="progressMetric">0 / 0</strong></div>
@@ -682,6 +769,10 @@ pre{max-height:680px}
       </section>
     </div>
     <section>
+      <h2>错误列表</h2>
+      <div class="wide-table"><table><thead><tr><th>作品</th><th>状态</th><th>次数</th><th>下次重试</th><th>更新时间</th><th>错误</th></tr></thead><tbody id="errorsBody"></tbody></table></div>
+    </section>
+    <section>
       <h2>最近链接</h2>
       <div class="wide-table"><table><thead><tr><th>作品</th><th>状态</th><th>次数</th><th>来源</th><th>更新时间</th><th>错误</th></tr></thead><tbody id="notesBody"></tbody></table></div>
     </section>
@@ -694,7 +785,12 @@ pre{max-height:680px}
     const $ = (id) => document.getElementById(id);
     const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[ch]));
     function statusLabel(status) {{
-      return {{pending:"待处理", done:"完成", failed:"失败"}}[status] || status || "";
+      return {{pending:"待处理", retry:"待重试", done:"完成", failed:"失败"}}[status] || status || "";
+    }}
+    function retryTime(value) {{
+      if (!value) return "-";
+      const date = new Date(Number(value) * 1000);
+      return Number.isFinite(date.getTime()) ? date.toLocaleString() : "-";
     }}
     function updateLogs(id, lines) {{
       const box = $(id);
@@ -713,6 +809,17 @@ pre{max-height:680px}
           <td>${{esc((n.last_error || "").slice(0, 240))}}</td>
         </tr>`).join("");
     }}
+    function renderErrors(notes) {{
+      $("errorsBody").innerHTML = (notes || []).map((n) => `
+        <tr class="status-${{esc(n.status)}}">
+          <td><span class="status-dot"></span><a href="${{esc(n.url)}}" target="_blank">${{esc(n.note_id)}}</a></td>
+          <td>${{esc(statusLabel(n.status))}}</td>
+          <td>${{esc(n.attempts)}}</td>
+          <td>${{esc(retryTime(n.retry_after))}}</td>
+          <td>${{esc(n.updated_at || "")}}</td>
+          <td>${{esc((n.last_error || "").slice(0, 360))}}</td>
+        </tr>`).join("");
+    }}
     function renderCookie(summary) {{
       const missing = (summary?.missing_required || []).join(", ") || "无";
       $("cookiePill").textContent = `Cookie：${{summary?.present ? "已保存" : "未保存"}}`;
@@ -726,10 +833,12 @@ pre{max-height:680px}
         const progress = data.progress || {{}};
         $("runningPill").textContent = `运行状态：${{data.running ? "运行中" : "空闲"}}`;
         $("pendingMetric").textContent = counts.pending || 0;
+        $("retryMetric").textContent = counts.retry || 0;
         $("doneMetric").textContent = counts.done || 0;
         $("failedMetric").textContent = counts.failed || 0;
         $("progressMetric").textContent = `${{progress.done || 0}} / ${{progress.total || 0}}`;
         $("currentUrl").textContent = progress.current_url ? `当前：${{progress.current_url}}` : (data.last_run_message || "");
+        renderErrors(data.error_notes || []);
         renderNotes(data.notes || []);
         renderCookie(data.settings_cookie || {{}});
         updateLogs("apiLogBox", data.xhs_api_logs || []);
@@ -820,6 +929,10 @@ def make_handler(app: App):
                 app.log.write("已从网页端重新读取配置。")
                 redirect(self)
                 return
+            if self.path == "/clear-queue":
+                app.clear_queue()
+                redirect(self)
+                return
             if self.path == "/submit-links":
                 urls = extract_urls_from_text((form.get("links") or [""])[0])
                 result = app.submit_links(urls)
@@ -869,7 +982,7 @@ def make_handler(app: App):
 def worker_loop(app: App) -> None:
     app.log.write("小红书队列 worker 已启动；不会自动打开账号页面，只等待网页脚本/手动提交链接。")
     while not STOP_EVENT.is_set():
-        if not RUN_NOW_EVENT.wait(3):
+        if not RUN_NOW_EVENT.wait(30) and not app.has_due_retry():
             continue
         RUN_NOW_EVENT.clear()
         if STOP_EVENT.is_set():
