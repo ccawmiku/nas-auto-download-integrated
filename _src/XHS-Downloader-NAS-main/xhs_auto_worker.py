@@ -347,7 +347,7 @@ def compare_xhs_library(items: list[dict[str, Any]], work_path: Path) -> dict[st
         "missing_count": len(missing),
         "extra_count": len(extra),
         "matched": matched[:500],
-        "missing": missing[:500],
+        "missing": missing[:5000],
         "extra": extra[:500],
         "work_path": str(work_path),
         "checked_at": now_iso(),

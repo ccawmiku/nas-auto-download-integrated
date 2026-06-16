@@ -43,7 +43,7 @@ from xhs_auto_worker import (
 class IntegratedPageTests(unittest.TestCase):
     def test_home_page_includes_version_and_service_cards(self) -> None:
         body = integrated_server.page().decode("utf-8")
-        self.assertIn("v1.6.7-dev", body)
+        self.assertIn("v1.6.8-dev", body)
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)
@@ -238,7 +238,11 @@ class XhsSettingsTests(unittest.TestCase):
             result = compare_xhs_library(
                 [
                     {"author": "小小的鼠", "title": "从今往后不会再离开您的身边了_指挥官"},
-                    {"author": "苏丹", "title": "知更鸟和二月七"},
+                    {
+                        "author": "苏丹",
+                        "title": "知更鸟和二月七",
+                        "url": "https://www.xiaohongshu.com/discovery/item/missing",
+                    },
                 ],
                 root,
             )
@@ -248,6 +252,7 @@ class XhsSettingsTests(unittest.TestCase):
             self.assertEqual(result["missing_count"], 1)
             self.assertEqual(result["extra_count"], 1)
             self.assertEqual(result["missing"][0]["title"], "知更鸟和二月七")
+            self.assertEqual(result["missing"][0]["url"], "https://www.xiaohongshu.com/discovery/item/missing")
             self.assertEqual(result["extra"][0]["folder"], "2026-06-15_04.32.01_猫猫真可爱ovo_我怎么这么可爱")
 
     def test_resolves_xhs_library_download_subfolder(self) -> None:

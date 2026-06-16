@@ -1110,7 +1110,7 @@ Discord Community: https://discord.com/invite/ZYtmgKud9Y
         overlay.appendChild(modal);
         document.body.appendChild(overlay);
 
-        return { overlay, modal, progressBar, statusText, logArea, closeBtn };
+        return { overlay, modal, footer, progressBar, statusText, logArea, closeBtn };
     };
 
     const normalizeNoteItems = (items) => (items || [])
@@ -1125,6 +1125,8 @@ Discord Community: https://discord.com/invite/ZYtmgKud9Y
     const normalizeCompareItems = (items) => normalizeNoteItems(items)
         .filter(item => item.title)
         .map(item => ({
+            id: item.id,
+            url: item.url,
             author: item.author,
             title: item.title,
         }));
@@ -1143,8 +1145,10 @@ Discord Community: https://discord.com/invite/ZYtmgKud9Y
 本地多余：${compare.extra_count || 0}
 `;
         if (missing.length > 0) {
+            const hiddenMissing = Math.max(0, missing.length - 5000);
             logArea.value += `\n本地还没有：
-${missing.slice(0, 200).map(item => `- ${item.author ? `${item.author}_` : ''}${item.title}`).join('\n')}
+${missing.slice(0, 5000).map(item => `- ${item.author ? `${item.author}_` : ''}${item.title}`).join('\n')}
+${hiddenMissing ? `... 还有 ${hiddenMissing} 条未显示\n` : ''}
 `;
         }
         if (extra.length > 0) {
@@ -1256,7 +1260,7 @@ ${extra.slice(0, 200).map(item => `- ${item.folder}`).join('\n')}
             return;
         }
 
-        const { progressBar, statusText, logArea, closeBtn } = showProgressModal();
+        const { footer, progressBar, statusText, logArea, closeBtn } = showProgressModal();
         const endpoint = dockerLibraryEndpoint();
         logArea.value = `准备提交 ${total} 个作品名字到 ${endpoint}
 ========================================
@@ -1308,7 +1312,23 @@ ${extra.slice(0, 200).map(item => `- ${item.folder}`).join('\n')}
             });
 
             progressBar.style.width = '100%';
-            appendCompareLog(logArea, result.result || result.library_compare);
+            const compare = result.result || result.library_compare;
+            appendCompareLog(logArea, compare);
+            const missingItems = normalizeNoteItems(compare?.missing || []).filter(item => item.url);
+            if (missingItems.length > 0) {
+                const sendMissingBtn = document.createElement('button');
+                sendMissingBtn.className = 'primary-btn';
+                sendMissingBtn.textContent = `发送未下载到 Docker（${missingItems.length}）`;
+                sendMissingBtn.addEventListener('click', () => {
+                    sendMissingBtn.disabled = true;
+                    sendMissingBtn.textContent = '正在发送...';
+                    sendUrlsToApi(missingItems.map(item => item.url), missingItems).then();
+                });
+                footer.insertBefore(sendMissingBtn, closeBtn);
+                logArea.value += `\n可点击底部按钮将 ${missingItems.length} 条本地还没有的作品发送到 Docker 下载队列。\n`;
+            } else if ((compare?.missing_count || 0) > 0) {
+                logArea.value += `\n本次缺失列表没有可发送链接，请先用新版脚本重新提交完整名单。\n`;
+            }
             statusText.textContent = `对比完成：已提交 ${total} 个作品名字`;
             showToast('Docker 已完成本地目录对比。');
         } catch (error) {
