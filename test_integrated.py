@@ -43,7 +43,7 @@ from xhs_auto_worker import (
 class IntegratedPageTests(unittest.TestCase):
     def test_home_page_includes_version_and_service_cards(self) -> None:
         body = integrated_server.page().decode("utf-8")
-        self.assertIn("v1.7.0-dev", body)
+        self.assertIn("v1.7.1-dev", body)
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)
@@ -270,6 +270,20 @@ class XhsSettingsTests(unittest.TestCase):
             self.assertEqual(result["local_count"], 1)
             self.assertEqual(result["matched_count"], 1)
             self.assertEqual(result["work_path"], str(download))
+
+    def test_xhs_retry_button_requeues_by_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = XhsStore(Path(tmp) / "xhs.sqlite3", XhsRingLog())
+            url = "https://www.xiaohongshu.com/discovery/item/abc123?xsec_token=t1"
+            note_id = "abc123"
+            store.enqueue([url], "test")
+            store.mark_failed(note_id, "old error")
+            self.assertTrue(store.force_pending_url(url, "retry-button"))
+            row = dict(store.pending(False, 0, 10)[0])
+            self.assertEqual(row["note_id"], note_id)
+            self.assertEqual(row["url"], url)
+            self.assertEqual(row["status"], "pending")
+            self.assertEqual(row["last_error"], "")
 
     def test_xhs_link_queue_accepts_and_deduplicates_browser_submissions(self) -> None:
         old_queue_file = integrated_server.XHS_QUEUE_FILE

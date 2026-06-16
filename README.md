@@ -26,7 +26,7 @@ docker compose up -d
 默认镜像：
 
 ```text
-ghcr.io/ccawmiku/nas-auto-download-integrated:v1.7.0-dev
+ghcr.io/ccawmiku/nas-auto-download-integrated:v1.7.1-dev
 ```
 
 每次发布都会同步更新 `docker-compose.yml` 里的镜像版本。NAS 端更新时执行 `docker compose pull && docker compose up -d`，避免复用旧镜像 tag。
@@ -60,7 +60,7 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.7.0-dev
 /volume2/docker/nas-auto-download-integrated/instagram/config
 /volume2/docker/nas-auto-download-integrated/instagram/queue
 /volume2/docker/nas-auto-download-integrated/instagram/state
-/volume2/se-p/instagram
+/volume2/se-p/ins
 ```
 
 需要调整时直接改 `docker-compose.yml`。

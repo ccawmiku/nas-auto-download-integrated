@@ -32,7 +32,7 @@ except ModuleNotFoundError:
 
 PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
-APP_VERSION = os.environ.get("APP_VERSION", "v1.7.0-dev")
+APP_VERSION = os.environ.get("APP_VERSION", "v1.7.1-dev")
 XHS_QUEUE_FILE = Path(os.environ.get("XHS_QUEUE_FILE", "/queue/xhs/links.txt"))
 INSTAGRAM_QUEUE_FILE = Path(os.environ.get("INSTAGRAM_QUEUE_FILE", "/queue/instagram/links.txt"))
 MAX_XHS_API_BODY_BYTES = 5_000_000

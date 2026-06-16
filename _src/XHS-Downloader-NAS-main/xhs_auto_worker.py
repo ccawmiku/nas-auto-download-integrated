@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 import traceback
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -40,7 +41,7 @@ NOTE_URL_RE = re.compile(
     r"https?://(?:www\.)?(?:xiaohongshu\.com|xhslink\.com)/[^\s\"'<>]+",
     re.IGNORECASE,
 )
-NOTE_ID_RE = re.compile(r"/(?:discovery/)?item/([0-9a-fA-F]{16,32})")
+NOTE_ID_RE = re.compile(r"/(?:explore|discovery/item)/([0-9a-zA-Z_-]+)", re.IGNORECASE)
 XHS_API_FAILURE_MARKERS = (
     "下载失败",
     "网络异常",
@@ -436,7 +437,7 @@ class Store:
         accepted: list[str] = []
         skipped: list[str] = []
         invalid: list[str] = []
-        with self._lock, self.connect() as conn:
+        with self._lock, closing(self.connect()) as conn, conn:
             for url in urls:
                 note_id = note_id_from_url(url)
                 if not note_id:
@@ -485,16 +486,16 @@ class Store:
         if limit > 0:
             sql += " limit ?"
             params.append(limit)
-        with self.connect() as conn:
+        with closing(self.connect()) as conn:
             return conn.execute(sql, params).fetchall()
 
     def begin_run(self) -> int:
-        with self._lock, self.connect() as conn:
+        with self._lock, closing(self.connect()) as conn, conn:
             cur = conn.execute("insert into runs(started_at, status) values(?, 'running')", (now_iso(),))
             return int(cur.lastrowid)
 
     def finish_run(self, run_id: int, status: str, stats: dict[str, int], message: str = "") -> None:
-        with self._lock, self.connect() as conn:
+        with self._lock, closing(self.connect()) as conn, conn:
             conn.execute(
                 """
                 update runs
@@ -514,7 +515,7 @@ class Store:
             )
 
     def mark_downloaded(self, note_id: str) -> None:
-        with self._lock, self.connect() as conn:
+        with self._lock, closing(self.connect()) as conn, conn:
             conn.execute(
                 """
                 update notes
@@ -525,7 +526,7 @@ class Store:
             )
 
     def mark_failed(self, note_id: str, error: str) -> None:
-        with self._lock, self.connect() as conn:
+        with self._lock, closing(self.connect()) as conn, conn:
             conn.execute(
                 """
                 update notes
@@ -536,7 +537,7 @@ class Store:
             )
 
     def mark_retry(self, note_id: str, error: str, retry_after: float) -> None:
-        with self._lock, self.connect() as conn:
+        with self._lock, closing(self.connect()) as conn, conn:
             conn.execute(
                 """
                 update notes
@@ -550,7 +551,7 @@ class Store:
         cleaned = [str(note_id or "").strip() for note_id in note_ids if str(note_id or "").strip()]
         if not cleaned:
             return 0
-        with self._lock, self.connect() as conn:
+        with self._lock, closing(self.connect()) as conn, conn:
             placeholders = ",".join("?" for _ in cleaned)
             cur = conn.execute(
                 f"""
@@ -562,11 +563,40 @@ class Store:
             )
             return int(cur.rowcount or 0)
 
+    def force_pending_url(self, url: str, source: str = "retry") -> bool:
+        normalized_urls = extract_urls_from_text(url)
+        if not normalized_urls:
+            return False
+        normalized_url = normalized_urls[0]
+        note_id = note_id_from_url(normalized_url)
+        if not note_id:
+            return False
+        with self._lock, closing(self.connect()) as conn, conn:
+            row = conn.execute("select note_id from notes where note_id=?", (note_id,)).fetchone()
+            if row:
+                conn.execute(
+                    """
+                    update notes
+                    set url=?, source=?, status='pending', retry_after=null, last_error='', updated_at=?
+                    where note_id=?
+                    """,
+                    (normalized_url, source, now_iso(), note_id),
+                )
+            else:
+                conn.execute(
+                    """
+                    insert into notes(note_id, url, source, status, first_seen_at, updated_at)
+                    values(?, ?, ?, 'pending', ?, ?)
+                    """,
+                    (note_id, normalized_url, source, now_iso(), now_iso()),
+                )
+        return True
+
     def mark_pending_for_statuses(self, statuses: list[str]) -> int:
         allowed = [status for status in statuses if status in {"failed", "retry"}]
         if not allowed:
             return 0
-        with self._lock, self.connect() as conn:
+        with self._lock, closing(self.connect()) as conn, conn:
             placeholders = ",".join("?" for _ in allowed)
             cur = conn.execute(
                 f"""
@@ -579,12 +609,12 @@ class Store:
             return int(cur.rowcount or 0)
 
     def recent_notes(self, limit: int = 200) -> list[dict[str, Any]]:
-        with self.connect() as conn:
+        with closing(self.connect()) as conn:
             rows = conn.execute("select * from notes order by updated_at desc limit ?", (limit,)).fetchall()
             return [dict(row) for row in rows]
 
     def error_notes(self, limit: int = 200) -> list[dict[str, Any]]:
-        with self.connect() as conn:
+        with closing(self.connect()) as conn:
             rows = conn.execute(
                 "select * from notes where status in ('failed', 'retry') order by updated_at desc limit ?",
                 (limit,),
@@ -592,12 +622,12 @@ class Store:
             return [dict(row) for row in rows]
 
     def recent_runs(self, limit: int = 50) -> list[dict[str, Any]]:
-        with self.connect() as conn:
+        with closing(self.connect()) as conn:
             rows = conn.execute("select * from runs order by id desc limit ?", (limit,)).fetchall()
             return [dict(row) for row in rows]
 
     def counts(self) -> dict[str, int]:
-        with self.connect() as conn:
+        with closing(self.connect()) as conn:
             rows = conn.execute("select status, count(*) as n from notes group by status").fetchall()
             result = {"pending": 0, "retry": 0, "done": 0, "failed": 0}
             for row in rows:
@@ -605,14 +635,14 @@ class Store:
             return result
 
     def clear_queue(self) -> int:
-        with self._lock, self.connect() as conn:
+        with self._lock, closing(self.connect()) as conn, conn:
             row = conn.execute("select count(*) from notes where status in ('pending', 'retry', 'failed')").fetchone()
             count = int(row[0]) if row else 0
             conn.execute("delete from notes where status in ('pending', 'retry', 'failed')")
             return count
 
     def has_due_retry(self) -> bool:
-        with self.connect() as conn:
+        with closing(self.connect()) as conn:
             row = conn.execute(
                 "select 1 from notes where status='retry' and coalesce(retry_after, 0) <= ? limit 1",
                 (time.time(),),
@@ -783,12 +813,14 @@ class App:
         self.log.write(self.last_run_message)
         return removed
 
-    def retry_note(self, note_id: str) -> bool:
-        changed = self.store.mark_pending([note_id])
+    def retry_note(self, note_id: str, url: str = "") -> bool:
+        changed = self.store.force_pending_url(url, "retry-button") if url else False
+        if not changed:
+            changed = self.store.mark_pending([note_id]) > 0
         if changed:
-            self.last_run_message = f"已重新加入重试：{note_id}"
+            self.last_run_message = f"已重新加入重试：{url or note_id}"
             self.log.write(self.last_run_message)
-        return changed > 0
+        return changed
 
     def retry_errors(self) -> int:
         changed = self.store.mark_pending_for_statuses(["failed", "retry"])
@@ -987,8 +1019,8 @@ pre{max-height:680px}
       if (!resp.ok) throw new Error(await resp.text());
       return resp.json();
     }}
-    async function retryNote(noteId) {{
-      await postJson("/api/retry-note", {{note_id: noteId}});
+    async function retryNote(noteId, url) {{
+      await postJson("/api/retry-note", {{note_id: noteId, url}});
       await refreshStatus();
     }}
     function renderErrors(notes) {{
@@ -1000,7 +1032,7 @@ pre{max-height:680px}
           <td>${{esc(retryTime(n.retry_after))}}</td>
           <td>${{esc(n.updated_at || "")}}</td>
           <td>${{esc((n.last_error || "").slice(0, 360))}}</td>
-          <td><button class="secondary retry-note" type="button" data-note-id="${{esc(n.note_id)}}">重试</button></td>
+          <td><button class="secondary retry-note" type="button" data-note-id="${{esc(n.note_id)}}" data-url="${{esc(n.url)}}">重试</button></td>
         </tr>`).join("");
     }}
     function renderCompare(compare) {{
@@ -1048,7 +1080,7 @@ pre{max-height:680px}
       if (!(target instanceof HTMLElement)) return;
       if (target.classList.contains("retry-note")) {{
         target.setAttribute("disabled", "disabled");
-        try {{ await retryNote(target.dataset.noteId || ""); }} catch (error) {{ alert(`重试失败：${{error}}`); }}
+        try {{ await retryNote(target.dataset.noteId || "", target.dataset.url || ""); }} catch (error) {{ alert(`重试失败：${{error}}`); }}
         target.removeAttribute("disabled");
       }}
       if (target.id === "retryAllErrors") {{
@@ -1140,7 +1172,7 @@ def make_handler(app: App):
                 except json.JSONDecodeError as error:
                     send_json(self, {"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
                     return
-                changed = app.retry_note(str(payload.get("note_id") or ""))
+                changed = app.retry_note(str(payload.get("note_id") or ""), str(payload.get("url") or ""))
                 if changed:
                     RUN_NOW_EVENT.set()
                 send_json(self, {"ok": changed, "message": "已重新加入队列" if changed else "未找到可重试记录"})
