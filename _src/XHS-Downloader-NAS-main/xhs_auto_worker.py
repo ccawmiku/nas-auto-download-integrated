@@ -354,6 +354,16 @@ def compare_xhs_library(items: list[dict[str, Any]], work_path: Path) -> dict[st
     }
 
 
+def resolve_xhs_library_path(settings: dict[str, Any], config: dict[str, Any]) -> Path:
+    base = Path(str(settings.get("work_path") or config.get("work_path") or DEFAULT_DOWNLOADER_SETTINGS["work_path"]))
+    folder_name = str(settings.get("folder_name") or DEFAULT_DOWNLOADER_SETTINGS["folder_name"] or "").strip()
+    if folder_name:
+        nested = base / folder_name
+        if nested.exists() and nested.is_dir():
+            return nested
+    return base
+
+
 def xhs_api_segment_has_failure(text: str) -> bool:
     return any(marker in str(text or "") for marker in XHS_API_FAILURE_MARKERS)
 
@@ -788,7 +798,7 @@ class App:
 
     def compare_library(self, items: list[dict[str, Any]], source: str = "") -> dict[str, Any]:
         settings = sync_downloader_settings(self.config)
-        work_path = Path(str(settings.get("work_path") or self.config.get("work_path") or "/xhs"))
+        work_path = resolve_xhs_library_path(settings, self.config)
         result = compare_xhs_library(items, work_path)
         result["source"] = source
         self.last_library_compare = result

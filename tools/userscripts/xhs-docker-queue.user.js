@@ -1039,9 +1039,7 @@ Discord Community: https://discord.com/invite/ZYtmgKud9Y
             } else {
                 data = [];
             }
-            const autoRangeResult = applyAutoRangeForLikedAndSaved(data, order);
-            const rangeLimitedData = autoRangeResult.found ? autoRangeResult.data : data;
-            callback(rangeLimitedData.map(noteItemFromTuple));
+            callback(data.map(noteItemFromTuple));
         }, [0, 1, 2, 5].includes(order));
     };
 
