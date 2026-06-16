@@ -32,7 +32,7 @@ except ModuleNotFoundError:
 
 PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
-APP_VERSION = os.environ.get("APP_VERSION", "v1.7.1-dev")
+APP_VERSION = os.environ.get("APP_VERSION", "v1.7.2-dev")
 XHS_QUEUE_FILE = Path(os.environ.get("XHS_QUEUE_FILE", "/queue/xhs/links.txt"))
 INSTAGRAM_QUEUE_FILE = Path(os.environ.get("INSTAGRAM_QUEUE_FILE", "/queue/instagram/links.txt"))
 MAX_XHS_API_BODY_BYTES = 5_000_000
@@ -306,6 +306,8 @@ def ensure_configs() -> None:
             "queue_files": ["/queue/instagram/links.txt"],
             "download_dir": "/downloads/instagram",
             "cookie_file": "/config/instagram/instagram_cookies.txt",
+            "download_images": True,
+            "download_videos": True,
             "web": {"host": "127.0.0.1", "port": 18085},
         },
     )

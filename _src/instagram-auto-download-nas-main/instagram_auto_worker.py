@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -40,8 +41,23 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "interval_seconds": 300,
     "max_attempts": 3,
     "request_delay_seconds": 2,
+    "download_images": True,
+    "download_videos": True,
     "yt_dlp_format": "bv*+ba/b",
     "web": {"host": "127.0.0.1", "port": 18085, "log_lines": 1000},
+}
+
+MEDIA_EXTENSIONS = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+    ".gif",
+    ".mp4",
+    ".m4v",
+    ".mov",
+    ".webm",
+    ".mkv",
 }
 
 
@@ -96,6 +112,16 @@ def note_id_from_url(url: str) -> str:
     return match.group(1) if match else url[:180]
 
 
+def media_files(path: Path) -> set[Path]:
+    if not path.exists():
+        return set()
+    return {
+        item
+        for item in path.rglob("*")
+        if item.is_file() and item.suffix.lower() in MEDIA_EXTENSIONS and not item.name.endswith(".part")
+    }
+
+
 def tail_file(path: Path, limit: int = 200) -> list[str]:
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -144,7 +170,7 @@ class Store:
         return conn
 
     def _init(self) -> None:
-        with self.connect() as conn:
+        with closing(self.connect()) as conn, conn:
             conn.executescript(
                 """
                 create table if not exists notes (
@@ -166,7 +192,7 @@ class Store:
         accepted: list[str] = []
         skipped: list[str] = []
         invalid: list[str] = []
-        with self._lock, self.connect() as conn:
+        with self._lock, closing(self.connect()) as conn, conn:
             for url in urls:
                 found = extract_urls_from_text(url)
                 if not found:
@@ -189,25 +215,25 @@ class Store:
         return QueueResult(accepted, skipped, invalid)
 
     def next_pending(self) -> dict[str, Any] | None:
-        with self.connect() as conn:
+        with closing(self.connect()) as conn:
             row = conn.execute(
                 "select * from notes where status in ('pending','retry') order by first_seen_at limit 1"
             ).fetchone()
             return dict(row) if row else None
 
     def mark_running(self, note_id: str) -> None:
-        with self._lock, self.connect() as conn:
+        with self._lock, closing(self.connect()) as conn, conn:
             conn.execute("update notes set status='running', attempts=attempts+1, updated_at=? where note_id=?", (now_iso(), note_id))
 
     def mark_done(self, note_id: str) -> None:
-        with self._lock, self.connect() as conn:
+        with self._lock, closing(self.connect()) as conn, conn:
             conn.execute(
                 "update notes set status='done', last_error='', downloaded_at=?, updated_at=? where note_id=?",
                 (now_iso(), now_iso(), note_id),
             )
 
     def mark_error(self, note_id: str, error: str, max_attempts: int) -> None:
-        with self._lock, self.connect() as conn:
+        with self._lock, closing(self.connect()) as conn, conn:
             row = conn.execute("select attempts from notes where note_id=?", (note_id,)).fetchone()
             attempts = int(row["attempts"] if row else 0)
             status = "failed" if attempts >= max_attempts else "retry"
@@ -220,7 +246,7 @@ class Store:
         allowed = [status for status in statuses if status in {"failed", "retry"}]
         if not allowed:
             return 0
-        with self._lock, self.connect() as conn:
+        with self._lock, closing(self.connect()) as conn, conn:
             placeholders = ",".join("?" for _ in allowed)
             cur = conn.execute(
                 f"update notes set status='pending', last_error='', updated_at=? where status in ({placeholders})",
@@ -229,12 +255,12 @@ class Store:
             return int(cur.rowcount or 0)
 
     def counts(self) -> dict[str, int]:
-        with self.connect() as conn:
+        with closing(self.connect()) as conn:
             rows = conn.execute("select status, count(*) c from notes group by status").fetchall()
         return {str(row["status"]): int(row["c"]) for row in rows}
 
     def recent_notes(self, limit: int = 200) -> list[dict[str, Any]]:
-        with self.connect() as conn:
+        with closing(self.connect()) as conn:
             rows = conn.execute("select * from notes order by updated_at desc limit ?", (limit,)).fetchall()
         return [dict(row) for row in rows]
 
@@ -293,9 +319,37 @@ class App:
         self.log.write(f"已将 {changed} 条 Instagram 错误记录重新加入队列")
         return changed
 
-    def yt_dlp_command(self, url: str) -> list[str]:
-        download_dir = str(self.config.get("download_dir") or "/downloads/instagram")
-        outtmpl = "%(uploader|unknown)s/%(upload_date>%Y-%m-%d|unknown)s_%(title).80B_%(id)s.%(ext)s"
+    def work_dir_for_url(self, url: str) -> Path:
+        note_id = note_id_from_url(url)
+        return Path(str(self.config.get("download_dir") or "/downloads/instagram")) / note_id
+
+    def gallery_dl_image_command(self, url: str) -> list[str]:
+        work_dir = self.work_dir_for_url(url)
+        cmd = [
+            "gallery-dl",
+            "--no-input",
+            "--no-part",
+            "--write-metadata",
+            "-D",
+            str(work_dir),
+            "-f",
+            "{num}_{media_id}.{extension}",
+            "-o",
+            "videos=false",
+            "-o",
+            "audio=false",
+            "-o",
+            "previews=false",
+        ]
+        cookie_file = Path(str(self.config.get("cookie_file") or ""))
+        if cookie_file.exists() and cookie_file.stat().st_size > 0:
+            cmd.extend(["-o", f"cookies={cookie_file}"])
+        cmd.append(url)
+        return cmd
+
+    def yt_dlp_video_command(self, url: str) -> list[str]:
+        work_dir = self.work_dir_for_url(url)
+        outtmpl = "%(upload_date>%Y-%m-%d|unknown)s_%(title).80B_%(id)s.%(ext)s"
         cmd = [
             "yt-dlp",
             "--no-playlist",
@@ -307,7 +361,7 @@ class App:
             "-f",
             str(self.config.get("yt_dlp_format") or "bv*+ba/b"),
             "-P",
-            download_dir,
+            str(work_dir),
             "-o",
             outtmpl,
         ]
@@ -317,14 +371,10 @@ class App:
         cmd.append(url)
         return cmd
 
-    def download_one(self, item: dict[str, Any]) -> None:
-        note_id = str(item["note_id"])
-        url = str(item["url"])
-        self.store.mark_running(note_id)
-        self.progress = {"phase": "downloading", "current_url": url, "note_id": note_id}
-        self.log.write(f"yt-dlp Instagram: {url}")
+    def run_downloader(self, name: str, cmd: list[str], work_dir: Path) -> tuple[bool, str, int]:
+        before = media_files(work_dir)
         result = subprocess.run(
-            self.yt_dlp_command(url),
+            cmd,
             text=True,
             encoding="utf-8",
             errors="replace",
@@ -333,15 +383,46 @@ class App:
             timeout=900,
         )
         output = (result.stdout or "")[-5000:]
-        if result.returncode != 0:
-            raise RuntimeError(output or f"yt-dlp exited {result.returncode}")
+        after = media_files(work_dir)
+        added = len(after - before)
         if output.strip():
-            self.log.write(output.strip()[-1200:])
+            self.log.write(f"{name} 输出：{output.strip()[-1200:]}")
+        if result.returncode != 0:
+            return False, output or f"{name} exited {result.returncode}", added
+        return True, "", added
+
+    def download_one(self, item: dict[str, Any]) -> None:
+        note_id = str(item["note_id"])
+        url = str(item["url"])
+        self.store.mark_running(note_id)
+        self.progress = {"phase": "downloading", "current_url": url, "note_id": note_id}
+        work_dir = self.work_dir_for_url(url)
+        work_dir.mkdir(parents=True, exist_ok=True)
+        errors: list[str] = []
+        media_added = 0
+        if bool(self.config.get("download_images", True)):
+            self.log.write(f"gallery-dl Instagram 图片/轮播：{url}")
+            ok, error, added = self.run_downloader("gallery-dl", self.gallery_dl_image_command(url), work_dir)
+            media_added += added
+            if not ok:
+                errors.append(f"gallery-dl: {error[-1200:]}")
+        if bool(self.config.get("download_videos", True)):
+            self.log.write(f"yt-dlp Instagram 视频：{url}")
+            ok, error, added = self.run_downloader("yt-dlp", self.yt_dlp_video_command(url), work_dir)
+            media_added += added
+            if not ok:
+                errors.append(f"yt-dlp: {error[-1200:]}")
+        if media_added <= 0:
+            raise RuntimeError("\n".join(errors) or "没有下载到任何媒体文件")
+        if errors:
+            self.log.write(f"Instagram 部分下载完成：{note_id}，新增 {media_added} 个媒体文件；部分错误：{errors[-1][-500:]}")
         self.store.mark_done(note_id)
-        self.log.write(f"Instagram 下载完成：{note_id}")
+        self.log.write(f"Instagram 下载完成：{note_id}，目录：{work_dir}，新增媒体文件：{media_added}")
 
     def run_once(self) -> None:
-        if not shutil.which("yt-dlp"):
+        if bool(self.config.get("download_images", True)) and not shutil.which("gallery-dl"):
+            raise RuntimeError("gallery-dl 不存在，镜像依赖安装异常")
+        if bool(self.config.get("download_videos", True)) and not shutil.which("yt-dlp"):
             raise RuntimeError("yt-dlp 不存在，镜像依赖安装异常")
         self.import_queue_files()
         max_attempts = int(self.config.get("max_attempts") or 3)
@@ -419,7 +500,7 @@ textarea{min-height:110px}.wide-table{overflow:auto}table{width:100%;border-coll
 <section><h2>控制</h2><div class="actions"><form method="post" action="/run"><button type="submit">立即处理队列</button></form><form method="post" action="/retry-errors"><button class="secondary" type="submit">重试错误</button></form><form method="post" action="/reload"><button class="secondary" type="submit">重新读取配置</button></form></div><p class="muted">{html.escape(str(data["last_run_message"] or ""))}</p></section>
 <section><h2>队列</h2><div class="grid"><div>待处理<br><strong>{counts.get("pending",0)}</strong></div><div>重试<br><strong>{counts.get("retry",0)}</strong></div><div>完成<br><strong>{counts.get("done",0)}</strong></div><div>失败<br><strong>{counts.get("failed",0)}</strong></div></div></section>
 <section><h2>提交链接</h2><form method="post" action="/submit-links"><textarea name="links" placeholder="https://www.instagram.com/reel/..."></textarea><div class="actions"><button type="submit">加入队列</button></div></form></section>
-<section><h2>配置</h2><form method="post" action="/settings"><div class="grid"><label>下载目录<input name="download_dir" value="{html.escape(str(cfg.get("download_dir") or ""))}"></label><label>运行间隔秒<input name="interval_seconds" type="number" value="{html.escape(str(cfg.get("interval_seconds") or 300))}"></label><label>最大尝试<input name="max_attempts" type="number" value="{html.escape(str(cfg.get("max_attempts") or 3))}"></label><label>yt-dlp 格式<input name="yt_dlp_format" value="{html.escape(str(cfg.get("yt_dlp_format") or "bv*+ba/b"))}"></label></div><div class="actions"><button type="submit">保存配置</button></div></form><p class="muted">默认不使用 Cookie；如以后需要小号 Cookie，可把 Netscape cookies.txt 放到 {html.escape(str(cfg.get("cookie_file") or ""))}。</p></section>
+<section><h2>配置</h2><form method="post" action="/settings"><div class="grid"><label>下载目录<input name="download_dir" value="{html.escape(str(cfg.get("download_dir") or ""))}"></label><label>运行间隔秒<input name="interval_seconds" type="number" value="{html.escape(str(cfg.get("interval_seconds") or 300))}"></label><label>最大尝试<input name="max_attempts" type="number" value="{html.escape(str(cfg.get("max_attempts") or 3))}"></label><label>yt-dlp 视频格式<input name="yt_dlp_format" value="{html.escape(str(cfg.get("yt_dlp_format") or "bv*+ba/b"))}"></label></div><div class="actions"><label><input type="checkbox" name="download_images" value="1" {"checked" if cfg.get("download_images", True) else ""}> 图片/轮播使用 gallery-dl</label><label><input type="checkbox" name="download_videos" value="1" {"checked" if cfg.get("download_videos", True) else ""}> 视频/Reels 使用 yt-dlp</label><button type="submit">保存配置</button></div></form><p class="muted">每个作品保存到下载目录下独立文件夹，例如 /downloads/instagram/DZxxxx/。默认不使用 Cookie；如以后需要小号 Cookie，可把 Netscape cookies.txt 放到 {html.escape(str(cfg.get("cookie_file") or ""))}。</p></section>
 <section><h2>最近记录</h2><div class="wide-table"><table><thead><tr><th>作品</th><th>状态</th><th>次数</th><th>更新时间</th><th>错误</th></tr></thead><tbody>{"".join(f'<tr><td><a href="{html.escape(row["url"])}" target="_blank">{html.escape(row["note_id"])}</a></td><td>{html.escape(row["status"])}</td><td>{row["attempts"]}</td><td>{html.escape(str(row["updated_at"]))}</td><td>{html.escape(str(row["last_error"] or "")[:180])}</td></tr>' for row in data["notes"])}</tbody></table></div></section>
 <section><h2>日志</h2><pre>{"\n".join(html.escape(line) for line in data["logs"][-200:])}</pre></section>
 </main></body></html>"""
@@ -502,6 +583,8 @@ def make_handler(app: App):
                 app.config["interval_seconds"] = int((form.get("interval_seconds") or [app.config.get("interval_seconds")])[0])
                 app.config["max_attempts"] = int((form.get("max_attempts") or [app.config.get("max_attempts")])[0])
                 app.config["yt_dlp_format"] = (form.get("yt_dlp_format") or [app.config.get("yt_dlp_format")])[0]
+                app.config["download_images"] = "download_images" in form
+                app.config["download_videos"] = "download_videos" in form
                 write_json(app.config_path, app.config)
                 app.reload_config()
                 redirect(self)

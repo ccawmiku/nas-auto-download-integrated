@@ -26,7 +26,7 @@ docker compose up -d
 默认镜像：
 
 ```text
-ghcr.io/ccawmiku/nas-auto-download-integrated:v1.7.1-dev
+ghcr.io/ccawmiku/nas-auto-download-integrated:v1.7.2-dev
 ```
 
 每次发布都会同步更新 `docker-compose.yml` 里的镜像版本。NAS 端更新时执行 `docker compose pull && docker compose up -d`，避免复用旧镜像 tag。
@@ -89,7 +89,7 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.7.1-dev
 - 抖音页面会检查关键字段和参考 `app.yaml` 的 64 个字段，字段不满会直接提示风险
 - 抖音页面支持手动停止当前运行中的任务，停止后不会继续后续 job
 - 抖音运行目录会生成本地 `conf/conf.yaml` 并默认关闭 f2 的 Bark 推送，避免未配置 Bark 时额外报 405 噪音
-- Instagram 推荐通过 `tools/userscripts/instagram-docker-queue.user.js` 在电脑浏览器采集已加载的 post/reel 链接，提交到 `http://NAS_IP:14001/api/instagram/links`；Docker 端默认不使用主账号 Cookie，直接用 `yt-dlp` 队列下载公开可访问内容
+- Instagram 推荐通过 `tools/userscripts/instagram-docker-queue.user.js` 在电脑浏览器采集已加载的 post/reel 链接，提交到 `http://NAS_IP:14001/api/instagram/links`；Docker 端默认不使用主账号 Cookie，图片/轮播使用 `gallery-dl`，视频/Reels 使用 `yt-dlp`，并按作品 ID 单独建文件夹
 - 统一首页使用侧边栏切换子页面，子页面不再额外注入返回条
 
 ## 小红书浏览器脚本队列

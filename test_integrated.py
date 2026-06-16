@@ -15,8 +15,10 @@ sys.path.insert(0, str(ROOT / "_integrated"))
 sys.path.insert(0, str(ROOT / "_src" / "douyin-f2-auto-main"))
 sys.path.insert(0, str(ROOT / "_src" / "pixiv-auto-download-nas-main"))
 sys.path.insert(0, str(ROOT / "_src" / "XHS-Downloader-NAS-main"))
+sys.path.insert(0, str(ROOT / "_src" / "instagram-auto-download-nas-main"))
 
 import integrated_server
+from instagram_auto_worker import App as InstagramApp, media_files
 from douyin_f2_worker import (
     DOUYIN_REFERENCE_COOKIE_ORDER,
     F2SkipStopGuard,
@@ -43,7 +45,7 @@ from xhs_auto_worker import (
 class IntegratedPageTests(unittest.TestCase):
     def test_home_page_includes_version_and_service_cards(self) -> None:
         body = integrated_server.page().decode("utf-8")
-        self.assertIn("v1.7.1-dev", body)
+        self.assertIn("v1.7.2-dev", body)
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)
@@ -335,6 +337,44 @@ class XhsSettingsTests(unittest.TestCase):
                 self.assertEqual(second["skipped"], [url1, "https://www.instagram.com/p/DEF456/"])
             finally:
                 integrated_server.INSTAGRAM_QUEUE_FILE = old_queue_file
+
+    def test_instagram_downloaders_use_one_folder_per_post_and_split_libraries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config_path = root / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "database": str(root / "state" / "instagram.sqlite3"),
+                        "queue_files": [str(root / "queue" / "links.txt")],
+                        "download_dir": str(root / "downloads"),
+                        "cookie_file": str(root / "config" / "instagram_cookies.txt"),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            app = InstagramApp(config_path)
+            url = "https://www.instagram.com/p/DZZPc-2iSfI/"
+
+            self.assertEqual(app.work_dir_for_url(url), root / "downloads" / "DZZPc-2iSfI")
+
+            image_cmd = app.gallery_dl_image_command(url)
+            video_cmd = app.yt_dlp_video_command(url)
+            self.assertEqual(image_cmd[0], "gallery-dl")
+            self.assertEqual(video_cmd[0], "yt-dlp")
+            self.assertIn("videos=false", image_cmd)
+            self.assertIn("previews=false", image_cmd)
+            self.assertIn(str(root / "downloads" / "DZZPc-2iSfI"), image_cmd)
+            self.assertIn(str(root / "downloads" / "DZZPc-2iSfI"), video_cmd)
+            self.assertFalse(any("%(uploader" in part for part in video_cmd))
+
+    def test_instagram_media_files_ignores_metadata_and_partials(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a.jpg").write_text("image", encoding="utf-8")
+            (root / "a.info.json").write_text("{}", encoding="utf-8")
+            (root / "b.mp4.part").write_text("partial", encoding="utf-8")
+            self.assertEqual(media_files(root), {root / "a.jpg"})
 
 
 class PixivNetworkTests(unittest.TestCase):
