@@ -305,7 +305,8 @@ class Store:
         return conn
 
     def _init(self) -> None:
-        with self.connect() as conn:
+        conn = self.connect()
+        try:
             conn.executescript(
                 """
                 create table if not exists notes (
@@ -321,7 +322,6 @@ class Store:
                     downloaded_at text
                 );
                 create index if not exists idx_notes_status on notes(status);
-                create index if not exists idx_notes_retry_after on notes(retry_after);
                 create table if not exists runs (
                     id integer primary key autoincrement,
                     started_at text not null,
@@ -339,6 +339,10 @@ class Store:
                 conn.execute("alter table notes add column retry_after real")
             except sqlite3.OperationalError:
                 pass
+            conn.execute("create index if not exists idx_notes_retry_after on notes(retry_after)")
+            conn.commit()
+        finally:
+            conn.close()
 
     def enqueue(self, urls: list[str], source: str = "queue") -> QueueResult:
         accepted: list[str] = []

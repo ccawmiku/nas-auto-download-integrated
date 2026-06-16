@@ -3,6 +3,7 @@ import tempfile
 import unittest
 import zipfile
 import json
+import sqlite3
 from pathlib import Path
 
 import requests
@@ -27,6 +28,8 @@ from douyin_f2_worker import (
 )
 from pixiv_auto_worker import classify_error, safe_extract_zip
 from xhs_auto_worker import (
+    RingLog as XhsRingLog,
+    Store as XhsStore,
     cookie_summary_from_settings,
     is_transient_xhs_failure,
     save_settings_cookie,
@@ -38,7 +41,7 @@ from xhs_auto_worker import (
 class IntegratedPageTests(unittest.TestCase):
     def test_home_page_includes_version_and_service_cards(self) -> None:
         body = integrated_server.page().decode("utf-8")
-        self.assertIn("v1.6.3-dev", body)
+        self.assertIn("v1.6.4-dev", body)
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)
@@ -156,6 +159,39 @@ class DouyinCookieTests(unittest.TestCase):
 
 
 class XhsSettingsTests(unittest.TestCase):
+    def test_store_migrates_existing_notes_table_before_retry_index(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "xhs.sqlite3"
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.executescript(
+                    """
+                    create table notes (
+                        note_id text primary key,
+                        url text not null,
+                        source text,
+                        status text not null default 'pending',
+                        attempts integer not null default 0,
+                        last_error text,
+                        first_seen_at text not null,
+                        updated_at text not null,
+                        downloaded_at text
+                    );
+                    """
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            store = XhsStore(db_path, XhsRingLog())
+            conn = store.connect()
+            try:
+                columns = [row[1] for row in conn.execute("pragma table_info(notes)").fetchall()]
+                indexes = [row[1] for row in conn.execute("pragma index_list(notes)").fetchall()]
+            finally:
+                conn.close()
+            self.assertIn("retry_after", columns)
+            self.assertIn("idx_notes_retry_after", indexes)
+
     def test_downloader_settings_preserves_cookie_and_applies_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             settings_path = Path(tmp) / "settings.json"
