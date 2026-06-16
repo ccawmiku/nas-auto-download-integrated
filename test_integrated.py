@@ -45,7 +45,7 @@ from xhs_auto_worker import (
 class IntegratedPageTests(unittest.TestCase):
     def test_home_page_includes_version_and_service_cards(self) -> None:
         body = integrated_server.page().decode("utf-8")
-        self.assertIn("v1.7.2-dev", body)
+        self.assertIn("v1.7.3-dev", body)
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)
@@ -356,6 +356,8 @@ class XhsSettingsTests(unittest.TestCase):
             app = InstagramApp(config_path)
             url = "https://www.instagram.com/p/DZZPc-2iSfI/"
 
+            self.assertFalse(app.config["download_images"])
+            self.assertTrue(app.config["download_videos"])
             self.assertEqual(app.work_dir_for_url(url), root / "downloads" / "DZZPc-2iSfI")
 
             image_cmd = app.gallery_dl_image_command(url)
@@ -375,6 +377,30 @@ class XhsSettingsTests(unittest.TestCase):
             (root / "a.info.json").write_text("{}", encoding="utf-8")
             (root / "b.mp4.part").write_text("partial", encoding="utf-8")
             self.assertEqual(media_files(root), {root / "a.jpg"})
+
+    def test_instagram_browser_image_upload_saves_under_post_folder_and_dedupes(self) -> None:
+        old_download_dir = integrated_server.INSTAGRAM_DOWNLOAD_DIR
+        with tempfile.TemporaryDirectory() as tmp:
+            integrated_server.INSTAGRAM_DOWNLOAD_DIR = Path(tmp)
+            try:
+                payload = {
+                    "post_url": "https://www.instagram.com/p/DZZPc-2iSfI/",
+                    "source_url": "https://scontent.cdninstagram.com/example.jpg",
+                    "filename": "example.jpg",
+                    "content_type": "image/jpeg",
+                    "data_base64": "aGVsbG8=",
+                }
+                first = integrated_server.save_instagram_browser_image(payload)
+                second = integrated_server.save_instagram_browser_image(payload)
+                self.assertEqual(first["note_id"], "DZZPc-2iSfI")
+                self.assertFalse(first["skipped"])
+                self.assertTrue(second["skipped"])
+                saved = Path(first["path"])
+                self.assertTrue(saved.exists())
+                self.assertEqual(saved.read_bytes(), b"hello")
+                self.assertEqual(saved.parent, Path(tmp) / "DZZPc-2iSfI" / "browser-images")
+            finally:
+                integrated_server.INSTAGRAM_DOWNLOAD_DIR = old_download_dir
 
 
 class PixivNetworkTests(unittest.TestCase):

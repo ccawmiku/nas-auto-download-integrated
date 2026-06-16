@@ -13,6 +13,8 @@ import sys
 import threading
 import time
 import yaml
+import base64
+import hashlib
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -32,10 +34,12 @@ except ModuleNotFoundError:
 
 PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
-APP_VERSION = os.environ.get("APP_VERSION", "v1.7.2-dev")
+APP_VERSION = os.environ.get("APP_VERSION", "v1.7.3-dev")
 XHS_QUEUE_FILE = Path(os.environ.get("XHS_QUEUE_FILE", "/queue/xhs/links.txt"))
 INSTAGRAM_QUEUE_FILE = Path(os.environ.get("INSTAGRAM_QUEUE_FILE", "/queue/instagram/links.txt"))
 MAX_XHS_API_BODY_BYTES = 5_000_000
+MAX_INSTAGRAM_IMAGE_BODY_BYTES = int(os.environ.get("MAX_INSTAGRAM_IMAGE_BODY_BYTES", str(30 * 1024 * 1024)))
+INSTAGRAM_DOWNLOAD_DIR = Path(os.environ.get("INSTAGRAM_DOWNLOAD_DIR", "/downloads/instagram"))
 DOUYIN_CONFIG_PATH = Path(os.environ.get("DOUYIN_CONFIG_PATH", "/config/douyin/config.json"))
 DOUYIN_COOKIE_YAML_PLACEHOLDER = "__DOUYIN_COOKIE_PLACEHOLDER__"
 DEFAULT_DOUYIN_CONFIG: dict[str, Any] = {
@@ -306,7 +310,7 @@ def ensure_configs() -> None:
             "queue_files": ["/queue/instagram/links.txt"],
             "download_dir": "/downloads/instagram",
             "cookie_file": "/config/instagram/instagram_cookies.txt",
-            "download_images": True,
+            "download_images": False,
             "download_videos": True,
             "web": {"host": "127.0.0.1", "port": 18085},
         },
@@ -700,6 +704,11 @@ def extract_instagram_urls_from_text(text: str) -> list[str]:
     return dedupe_ordered(urls)
 
 
+def instagram_note_id_from_url(url: str) -> str:
+    match = re.search(r"instagram\.com/(?:p|reel|tv)/([A-Za-z0-9_-]+)", str(url or ""), re.IGNORECASE)
+    return match.group(1) if match else ""
+
+
 def normalize_instagram_link_payload(payload: dict[str, Any]) -> tuple[list[str], list[str]]:
     candidates: list[str] = []
     if isinstance(payload.get("urls"), list):
@@ -721,6 +730,66 @@ def normalize_instagram_link_payload(payload: dict[str, Any]) -> tuple[list[str]
         else:
             invalid.append(value[:200])
     return dedupe_ordered(urls), invalid
+
+
+def extension_from_content_type(content_type: str, fallback_name: str = "") -> str:
+    lower = str(content_type or "").split(";", 1)[0].strip().lower()
+    mapping = {
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+        "image/gif": ".gif",
+    }
+    if lower in mapping:
+        return mapping[lower]
+    suffix = Path(str(fallback_name or "")).suffix.lower()
+    return suffix if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif"} else ".jpg"
+
+
+def save_instagram_browser_image(payload: dict[str, Any]) -> dict[str, Any]:
+    urls, _invalid = normalize_instagram_link_payload(payload)
+    post_url = urls[0] if urls else ""
+    note_id = instagram_note_id_from_url(post_url or str(payload.get("post_url") or ""))
+    if not note_id:
+        raise ValueError("缺少有效 Instagram 作品链接")
+    data_base64 = str(payload.get("data_base64") or "")
+    if "," in data_base64 and data_base64.split(",", 1)[0].startswith("data:"):
+        data_base64 = data_base64.split(",", 1)[1]
+    try:
+        content = base64.b64decode(data_base64, validate=True)
+    except Exception as error:
+        raise ValueError(f"图片 base64 无效：{error}") from error
+    if not content:
+        raise ValueError("图片内容为空")
+    digest = hashlib.sha256(content).hexdigest()
+    ext = extension_from_content_type(str(payload.get("content_type") or ""), str(payload.get("filename") or ""))
+    target_dir = INSTAGRAM_DOWNLOAD_DIR / note_id / "browser-images"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / f"browser_{digest[:16]}{ext}"
+    existed = target.exists()
+    if not existed:
+        target.write_bytes(content)
+    source_url = str(payload.get("source_url") or "")
+    meta = {
+        "post_url": post_url,
+        "source_url": source_url,
+        "content_type": str(payload.get("content_type") or ""),
+        "size": len(content),
+        "sha256": digest,
+        "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    meta_path = target.with_suffix(target.suffix + ".json")
+    if not meta_path.exists():
+        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {
+        "note_id": note_id,
+        "path": str(target),
+        "relative_path": str(target.relative_to(INSTAGRAM_DOWNLOAD_DIR)),
+        "size": len(content),
+        "sha256": digest,
+        "skipped": existed,
+    }
 
 
 def append_instagram_queue_links(urls: list[str]) -> dict[str, Any]:
@@ -1200,6 +1269,30 @@ class Handler(BaseHTTPRequestHandler):
                     "triggered": trigger_result,
                 }
             )
+            return
+        if split.path == "/api/instagram/browser-image":
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            if length > MAX_INSTAGRAM_IMAGE_BODY_BYTES:
+                self.send_json_payload({"ok": False, "error": "图片请求体过大"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+                return
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            except json.JSONDecodeError as error:
+                self.send_json_payload({"ok": False, "error": f"JSON 解析失败：{error}"}, HTTPStatus.BAD_REQUEST)
+                return
+            if not isinstance(payload, dict):
+                self.send_json_payload({"ok": False, "error": "请求体必须是 JSON 对象"}, HTTPStatus.BAD_REQUEST)
+                return
+            try:
+                saved = save_instagram_browser_image(payload)
+            except ValueError as error:
+                self.send_json_payload({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
+                return
+            log(
+                "浏览器脚本上传 Instagram 图片："
+                f"note={saved['note_id']} size={saved['size']} skipped={saved['skipped']}"
+            )
+            self.send_json_payload({"ok": True, **saved})
             return
         for key, svc in SERVICES.items():
             if split.path.startswith(svc["path"]):

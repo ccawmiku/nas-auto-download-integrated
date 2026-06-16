@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Instagram Docker Queue
 // @namespace    nas-auto-download
-// @version      0.2.0
-// @description  Record loaded Instagram post/reel links and send them to NAS Auto Download Docker
+// @version      0.3.0
+// @description  Record loaded Instagram links, upload loaded images from browser, and send video links to Docker
 // @match        https://www.instagram.com/*
 // @match        https://instagram.com/*
 // @grant        GM_getValue
@@ -19,6 +19,7 @@
     const defaultHost = '192.168.1.20';
     const defaultPort = '14001';
     const defaultPath = '/api/instagram/links';
+    const imageUploadPath = '/api/instagram/browser-image';
     const storeKey = 'instagramRecordedLinks.v1';
     const urlPattern = /^https:\/\/www\.instagram\.com\/(p|reel|tv)\/[A-Za-z0-9_-]+\/?/i;
     const state = {
@@ -37,6 +38,11 @@
         if (path && !path.startsWith('/')) path = `/${path}`;
         if (port && !/:\d+$/.test(host.replace(/^https?:\/\//i, ''))) host = `${host}:${port}`;
         return `${host}${path || defaultPath}`;
+    };
+
+    const imageUploadEndpoint = () => {
+        const endpoint = dockerEndpoint();
+        return endpoint.replace(/\/api\/instagram\/links(?:\?.*)?$/i, imageUploadPath);
     };
 
     const normalizeUrl = (value) => {
@@ -63,6 +69,7 @@
                     state.links.set(url, {
                         url,
                         label: String(row.label || '').trim(),
+                        images: Array.isArray(row.images) ? row.images.filter(Boolean) : [],
                         firstSeen: row.firstSeen || new Date().toISOString(),
                         lastSeen: row.lastSeen || new Date().toISOString(),
                     });
@@ -112,7 +119,52 @@
         return label.slice(0, 160);
     };
 
-    const remember = (url, label = '') => {
+    const imageFromElement = (img) => {
+        if (!img) return '';
+        const srcset = img.getAttribute('srcset') || '';
+        if (srcset) {
+            const candidates = srcset.split(',').map((item) => {
+                const parts = item.trim().split(/\s+/);
+                const url = parts[0] || '';
+                const width = Number(String(parts[1] || '').replace(/[^\d.]/g, '')) || 0;
+                return {url, width};
+            }).filter((item) => item.url);
+            candidates.sort((a, b) => b.width - a.width);
+            if (candidates[0]) return candidates[0].url;
+        }
+        return img.currentSrc || img.src || img.getAttribute('src') || '';
+    };
+
+    const isUsefulImage = (img) => {
+        const url = imageFromElement(img);
+        if (!/^https?:\/\//i.test(url)) return false;
+        const width = Number(img.naturalWidth || img.width || 0);
+        const height = Number(img.naturalHeight || img.height || 0);
+        if (width && height && (width < 220 || height < 220)) return false;
+        if (/\/profile_images?\/|s150x150|150x150|\/vp\//i.test(url)) return false;
+        return true;
+    };
+
+    const collectImagesFrom = (root) => Array.from(root.querySelectorAll('img[src], img[srcset]'))
+        .filter(isUsefulImage)
+        .map(imageFromElement)
+        .filter(Boolean)
+        .filter((url, index, list) => list.indexOf(url) === index)
+        .slice(0, 40);
+
+    const mergeImages = (existing, incoming) => {
+        const seen = new Set();
+        const merged = [];
+        [...(existing || []), ...(incoming || [])].forEach((url) => {
+            const value = String(url || '').trim();
+            if (!value || seen.has(value)) return;
+            seen.add(value);
+            merged.push(value);
+        });
+        return merged.slice(0, 80);
+    };
+
+    const remember = (url, label = '', images = []) => {
         const normalized = normalizeUrl(url);
         if (!normalized || !urlPattern.test(normalized)) return false;
         const now = new Date().toISOString();
@@ -120,6 +172,7 @@
         state.links.set(normalized, {
             url: normalized,
             label: label || (existing && existing.label) || '',
+            images: mergeImages(existing && existing.images, images),
             firstSeen: (existing && existing.firstSeen) || now,
             lastSeen: now,
         });
@@ -130,9 +183,9 @@
     const scanVisibleLinks = () => {
         let added = 0;
         const current = normalizeUrl(location.href);
-        if (current && remember(current, document.title || '当前页面')) added += 1;
+        if (current && remember(current, document.title || '当前页面', collectImagesFrom(document))) added += 1;
         document.querySelectorAll('a[href]').forEach((anchor) => {
-            if (remember(anchor.getAttribute('href') || '', textFromAnchor(anchor))) added += 1;
+            if (remember(anchor.getAttribute('href') || '', textFromAnchor(anchor), collectImagesFrom(anchor))) added += 1;
         });
         updateCount();
         if (added > 0) setStatus(`已记录 ${state.links.size} 条链接`);
@@ -170,6 +223,76 @@
         });
     });
 
+    const blobToBase64 = (blob) => new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || '').split(',', 2)[1] || '');
+        reader.onerror = () => reject(reader.error || new Error('图片读取失败'));
+        reader.readAsDataURL(blob);
+    });
+
+    const fetchImageBlob = (url) => new Promise((resolve, reject) => {
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url,
+            responseType: 'blob',
+            timeout: 60000,
+            onload: (response) => {
+                if (response.status < 200 || response.status >= 300 || !response.response) {
+                    reject(new Error(`图片下载失败 HTTP ${response.status}`));
+                    return;
+                }
+                const headerText = String(response.responseHeaders || '');
+                resolve({
+                    blob: response.response,
+                    contentType: response.response.type || headerText.match(/content-type:\s*([^\r\n]+)/i)?.[1] || 'image/jpeg',
+                });
+            },
+            onerror: (response) => reject(new Error(response.statusText || '图片下载请求错误')),
+            ontimeout: () => reject(new Error('图片下载超时')),
+        });
+    });
+
+    const filenameFromImageUrl = (url, fallbackIndex) => {
+        try {
+            const parsed = new URL(url);
+            const name = decodeURIComponent(parsed.pathname.split('/').filter(Boolean).pop() || '');
+            return name || `browser_${fallbackIndex}.jpg`;
+        } catch (_error) {
+            return `browser_${fallbackIndex}.jpg`;
+        }
+    };
+
+    const uploadBrowserImages = async (rows) => {
+        let uploaded = 0;
+        let skipped = 0;
+        let failed = 0;
+        const endpoint = imageUploadEndpoint();
+        for (const row of rows) {
+            const images = Array.isArray(row.images) ? row.images : [];
+            for (let index = 0; index < images.length; index += 1) {
+                const imageUrl = images[index];
+                try {
+                    setStatus(`正在上传图片 ${uploaded + skipped + failed + 1}...`);
+                    const fetched = await fetchImageBlob(imageUrl);
+                    const base64 = await blobToBase64(fetched.blob);
+                    const body = await requestJson(endpoint, {
+                        post_url: row.url,
+                        source_url: imageUrl,
+                        filename: filenameFromImageUrl(imageUrl, index + 1),
+                        content_type: fetched.contentType,
+                        data_base64: base64,
+                    });
+                    if (body.skipped) skipped += 1;
+                    else uploaded += 1;
+                } catch (error) {
+                    console.warn('Instagram image upload failed', row.url, imageUrl, error);
+                    failed += 1;
+                }
+            }
+        }
+        return {uploaded, skipped, failed};
+    };
+
     const openPreview = () => {
         scanVisibleLinks();
         const rows = sortedLinks();
@@ -184,7 +307,7 @@
         modal.className = 'ig-docker-modal';
         modal.innerHTML = `
             <div class="ig-docker-modal-title">发送前预览</div>
-            <div class="ig-docker-modal-subtitle">准备提交 ${rows.length} 条链接到 ${escapeHtml(dockerEndpoint())}</div>
+            <div class="ig-docker-modal-subtitle">准备提交 ${rows.length} 条链接到 ${escapeHtml(dockerEndpoint())}，并上传已加载图片</div>
             <div class="ig-docker-list"></div>
             <div class="ig-docker-footer">
                 <button type="button" data-action="select-all">全部选中</button>
@@ -202,7 +325,7 @@
                 <span class="ig-index">${index + 1}</span>
                 <span class="ig-link">
                     <strong>${escapeHtml(row.label || shortUrl(row.url))}</strong>
-                    <small>${escapeHtml(row.url)}</small>
+                    <small>${escapeHtml(row.url)} · 图片 ${Array.isArray(row.images) ? row.images.length : 0} 张</small>
                 </span>
             `;
             list.appendChild(item);
@@ -225,21 +348,24 @@
                     box.checked = action === 'select-all';
                 });
             } else if (action === 'send') {
-                const urls = Array.from(modal.querySelectorAll('input[type="checkbox"]:checked')).map((box) => box.value);
-                if (urls.length === 0) {
+                const selectedUrls = Array.from(modal.querySelectorAll('input[type="checkbox"]:checked')).map((box) => box.value);
+                const selectedRows = rows.filter((row) => selectedUrls.includes(row.url));
+                if (selectedRows.length === 0) {
                     setStatus('没有选中要发送的链接。', true);
                     return;
                 }
                 button.disabled = true;
-                button.textContent = '发送中...';
+                button.textContent = '发送链接中...';
                 try {
                     const body = await requestJson(dockerEndpoint(), {
-                        urls,
+                        urls: selectedRows.map((row) => row.url),
                         source: 'instagram-userscript',
                         page: location.href,
                         submitted_at: new Date().toISOString(),
                     });
-                    setStatus(`Docker 已接收：新增 ${body.accepted || 0}，已存在 ${body.skipped || 0}`);
+                    button.textContent = '上传图片中...';
+                    const imageResult = await uploadBrowserImages(selectedRows);
+                    setStatus(`Docker 已接收：链接新增 ${body.accepted || 0}，已存在 ${body.skipped || 0}；图片上传 ${imageResult.uploaded}，已存在 ${imageResult.skipped}，失败 ${imageResult.failed}`);
                     close();
                 } catch (error) {
                     button.disabled = false;
@@ -412,11 +538,11 @@
         window.addEventListener('focus', scheduleScan);
         document.addEventListener('mouseover', (event) => {
             const anchor = event.target.closest && event.target.closest('a[href]');
-            if (anchor && remember(anchor.getAttribute('href') || '', textFromAnchor(anchor))) updateCount();
+            if (anchor && remember(anchor.getAttribute('href') || '', textFromAnchor(anchor), collectImagesFrom(anchor))) updateCount();
         }, true);
         document.addEventListener('click', (event) => {
             const anchor = event.target.closest && event.target.closest('a[href]');
-            if (anchor && remember(anchor.getAttribute('href') || '', textFromAnchor(anchor))) updateCount();
+            if (anchor && remember(anchor.getAttribute('href') || '', textFromAnchor(anchor), collectImagesFrom(anchor))) updateCount();
         }, true);
         setInterval(() => {
             if (location.href !== state.lastHref) {
