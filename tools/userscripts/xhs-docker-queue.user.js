@@ -1122,6 +1122,13 @@ Discord Community: https://discord.com/invite/ZYtmgKud9Y
             title: String(item.title || ''),
         }));
 
+    const normalizeCompareItems = (items) => normalizeNoteItems(items)
+        .filter(item => item.title)
+        .map(item => ({
+            author: item.author,
+            title: item.title,
+        }));
+
     const appendCompareLog = (logArea, compare) => {
         if (!compare) {
             return;
@@ -1242,7 +1249,7 @@ ${extra.slice(0, 200).map(item => `- ${item.folder}`).join('\n')}
     };
 
     const sendLibraryItemsToApi = async (items, source) => {
-        const normalizedItems = normalizeNoteItems(items);
+        const normalizedItems = normalizeCompareItems(items);
         const total = normalizedItems.length;
         if (total === 0) {
             showToast('未找到可提交的作品名字！');

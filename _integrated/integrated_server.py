@@ -32,8 +32,9 @@ except ModuleNotFoundError:
 
 PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
-APP_VERSION = os.environ.get("APP_VERSION", "v1.6.6-dev")
+APP_VERSION = os.environ.get("APP_VERSION", "v1.6.7-dev")
 XHS_QUEUE_FILE = Path(os.environ.get("XHS_QUEUE_FILE", "/queue/xhs/links.txt"))
+MAX_XHS_API_BODY_BYTES = 5_000_000
 DOUYIN_CONFIG_PATH = Path(os.environ.get("DOUYIN_CONFIG_PATH", "/config/douyin/config.json"))
 DOUYIN_COOKIE_YAML_PLACEHOLDER = "__DOUYIN_COOKIE_PLACEHOLDER__"
 DEFAULT_DOUYIN_CONFIG: dict[str, Any] = {
@@ -1002,7 +1003,7 @@ class Handler(BaseHTTPRequestHandler):
         split = urlsplit(self.path)
         if split.path == "/api/xhs/links":
             length = int(self.headers.get("Content-Length", "0") or 0)
-            if length > 500000:
+            if length > MAX_XHS_API_BODY_BYTES:
                 self.send_json_payload({"ok": False, "error": "请求体过大"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
                 return
             try:
@@ -1047,7 +1048,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if split.path == "/api/xhs/library":
             length = int(self.headers.get("Content-Length", "0") or 0)
-            if length > 500000:
+            if length > MAX_XHS_API_BODY_BYTES:
                 self.send_json_payload({"ok": False, "error": "请求体过大"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
                 return
             try:
