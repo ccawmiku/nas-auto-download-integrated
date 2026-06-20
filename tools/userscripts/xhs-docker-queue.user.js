@@ -153,10 +153,6 @@ KS-Downloader（快手、KuaiShou）：https://github.com/JoeanAmier/KS-Download
             extractLikedLinksDescription: '提取账号点赞作品链接并发送至 Docker',
             extractSavedLinksText: '提取收藏作品链接并发送',
             extractSavedLinksDescription: '提取账号收藏作品链接并发送至 Docker',
-            submitLikedNamesText: '提交点赞名单对比',
-            submitLikedNamesDescription: '提交账号点赞作品名字到 Docker，对比本地文件夹',
-            submitSavedNamesText: '提交收藏名单对比',
-            submitSavedNamesDescription: '提交账号收藏作品名字到 Docker，对比本地文件夹',
             extractSearchNoteLinksText: '提取作品链接并发送',
             extractSearchNoteLinksDescription: '提取搜索结果的作品链接并发送至 Docker',
             extractSearchUsersLinksText: '提取用户链接并发送',
@@ -291,10 +287,6 @@ Discord Community: https://discord.com/invite/ZYtmgKud9Y
             extractLikedLinksDescription: 'Extract liked note links and send them to Docker',
             extractSavedLinksText: 'Extract and Send Collected Note Links',
             extractSavedLinksDescription: 'Extract collected note links and send them to Docker',
-            submitLikedNamesText: 'Submit Liked Names for Compare',
-            submitLikedNamesDescription: 'Submit liked note names to Docker and compare local folders',
-            submitSavedNamesText: 'Submit Collected Names for Compare',
-            submitSavedNamesDescription: 'Submit collected note names to Docker and compare local folders',
             extractSearchNoteLinksText: 'Extract and Send Note Links',
             extractSearchNoteLinksDescription: 'Extract note links from search results and send them to Docker',
             extractSearchUsersLinksText: 'Extract and Send User Links',
@@ -476,14 +468,6 @@ Discord Community: https://discord.com/invite/ZYtmgKud9Y
     }
 
     const dockerApiEndpoint = () => dockerEndpointWithPath(config.dockerPath || defaultDockerPath);
-
-    const dockerLibraryEndpoint = () => {
-        const currentPath = String(config.dockerPath || defaultDockerPath).trim();
-        const libraryPath = /\/links\/?$/i.test(currentPath)
-            ? currentPath.replace(/\/links\/?$/i, '/library')
-            : '/api/xhs/library';
-        return dockerEndpointWithPath(libraryPath);
-    }
 
     const updateImageDownloadFormat = (value) => {
         config.imageDownloadFormat = value.toLowerCase();
@@ -1122,42 +1106,6 @@ Discord Community: https://discord.com/invite/ZYtmgKud9Y
             title: String(item.title || ''),
         }));
 
-    const normalizeCompareItems = (items) => normalizeNoteItems(items)
-        .filter(item => item.title)
-        .map(item => ({
-            id: item.id,
-            url: item.url,
-            author: item.author,
-            title: item.title,
-        }));
-
-    const appendCompareLog = (logArea, compare) => {
-        if (!compare) {
-            return;
-        }
-        const missing = Array.isArray(compare.missing) ? compare.missing : [];
-        const extra = Array.isArray(compare.extra) ? compare.extra : [];
-        logArea.value += `本地目录对比：
-网页提交：${compare.submitted_count || 0}
-本地文件夹：${compare.local_count || 0}
-匹配：${compare.matched_count || 0}
-本地还没有：${compare.missing_count || 0}
-本地多余：${compare.extra_count || 0}
-`;
-        if (missing.length > 0) {
-            const hiddenMissing = Math.max(0, missing.length - 5000);
-            logArea.value += `\n本地还没有：
-${missing.slice(0, 5000).map(item => `- ${item.author ? `${item.author}_` : ''}${item.title}`).join('\n')}
-${hiddenMissing ? `... 还有 ${hiddenMissing} 条未显示\n` : ''}
-`;
-        }
-        if (extra.length > 0) {
-            logArea.value += `\n本地多余：
-${extra.slice(0, 200).map(item => `- ${item.folder}`).join('\n')}
-`;
-        }
-    };
-
     const sendUrlsToApi = async (urls, items = []) => {
         const normalizedUrls = Array.from(new Set((urls || []).map(url => String(url || '').trim()).filter(Boolean)));
         const normalizedItems = normalizeNoteItems(items);
@@ -1235,7 +1183,6 @@ ${extra.slice(0, 200).map(item => `- ${item.folder}`).join('\n')}
 队列文件：${result.queue_file}
 触发 worker：${result.triggered?.ok ? '成功' : '未成功，但链接已入队'}
 `;
-            appendCompareLog(logArea, result.library_compare || result.result);
             statusText.textContent = `发送完成：Docker 已确认 ${total} 个链接`;
             showToast(`Docker 已确认接收 ${total} 个链接，可以关闭网页。`);
         } catch (error) {
@@ -1252,99 +1199,6 @@ ${extra.slice(0, 200).map(item => `- ${item.folder}`).join('\n')}
         }
     };
 
-    const sendLibraryItemsToApi = async (items, source) => {
-        const normalizedItems = normalizeCompareItems(items);
-        const total = normalizedItems.length;
-        if (total === 0) {
-            showToast('未找到可提交的作品名字！');
-            return;
-        }
-
-        const { footer, progressBar, statusText, logArea, closeBtn } = showProgressModal();
-        const endpoint = dockerLibraryEndpoint();
-        logArea.value = `准备提交 ${total} 个作品名字到 ${endpoint}
-========================================
-`;
-        normalizedItems.slice(0, 500).forEach((item, index) => {
-            logArea.value += `[${index + 1}/${total}] ${item.author ? `${item.author}_` : ''}${item.title}
-`;
-        });
-        logArea.value += `========================================
-正在等待 Docker 对比本地目录...
-`;
-        progressBar.style.width = '35%';
-        statusText.textContent = `正在提交 ${total} 个作品名字...`;
-
-        try {
-            const result = await new Promise((resolve, reject) => {
-                GM_xmlhttpRequest({
-                    method: 'POST',
-                    url: endpoint,
-                    data: JSON.stringify({
-                                           items: normalizedItems,
-                                           source,
-                                           page: window.location.href,
-                                           submitted_at: new Date().toISOString(),
-                                       }),
-                    headers: { 'Content-Type': 'application/json' },
-                    timeout: 30000,
-                    onload: function (response) {
-                        let body = {};
-                        try {
-                            body = JSON.parse(response.responseText || '{}');
-                        } catch (error) {
-                            reject(new Error(`Docker 返回内容不是 JSON：${response.responseText}`));
-                            return;
-                        }
-                        if (response.status < 200 || response.status >= 300 || !body.ok) {
-                            reject(new Error(`HTTP ${response.status}: ${response.responseText}`));
-                            return;
-                        }
-                        resolve(body);
-                    },
-                    onerror: function (response) {
-                        reject(new Error(response.statusText || '请求错误，请检查 Docker 服务地址、端口和网络。'));
-                    },
-                    ontimeout: function () {
-                        reject(new Error('请求超时，请检查 Docker 服务是否可访问。'));
-                    }
-                });
-            });
-
-            progressBar.style.width = '100%';
-            const compare = result.result || result.library_compare;
-            appendCompareLog(logArea, compare);
-            const missingItems = normalizeNoteItems(compare?.missing || []).filter(item => item.url);
-            if (missingItems.length > 0) {
-                const sendMissingBtn = document.createElement('button');
-                sendMissingBtn.className = 'primary-btn';
-                sendMissingBtn.textContent = `发送未下载到 Docker（${missingItems.length}）`;
-                sendMissingBtn.addEventListener('click', () => {
-                    sendMissingBtn.disabled = true;
-                    sendMissingBtn.textContent = '正在发送...';
-                    sendUrlsToApi(missingItems.map(item => item.url), missingItems).then();
-                });
-                footer.insertBefore(sendMissingBtn, closeBtn);
-                logArea.value += `\n可点击底部按钮将 ${missingItems.length} 条本地还没有的作品发送到 Docker 下载队列。\n`;
-            } else if ((compare?.missing_count || 0) > 0) {
-                logArea.value += `\n本次缺失列表没有可发送链接，请先用新版脚本重新提交完整名单。\n`;
-            }
-            statusText.textContent = `对比完成：已提交 ${total} 个作品名字`;
-            showToast('Docker 已完成本地目录对比。');
-        } catch (error) {
-            progressBar.style.width = '100%';
-            progressBar.style.background = '#ef4444';
-            logArea.value += `提交失败：${error.message || error}
-`;
-            statusText.textContent = '提交失败，请检查设置后重试';
-            showToast(`提交失败：${error.message || error}`);
-        } finally {
-            logArea.scrollTop = logArea.scrollHeight;
-            closeBtn.textContent = '关闭';
-            closeBtn.disabled = false;
-        }
-    };
-
     const extractAllLinksEvent = (order = 0) => {
         extractAllLinks((urlsString, items) => {
             if (urlsString && urlsString.trim() !== '') {
@@ -1353,17 +1207,6 @@ ${extra.slice(0, 200).map(item => `- ${item.folder}`).join('\n')}
                 sendUrlsToApi(urls, items).then();
             } else {
                 showToast(t.linkExtractError);
-            }
-        }, order);
-    };
-
-    const extractNameListEvent = (order, source) => {
-        extractAllNoteItems((items) => {
-            if (items.length > 0) {
-                showToast(`提取到 ${items.length} 个作品名字，将提交到 Docker 对比...`);
-                sendLibraryItemsToApi(items, source).then();
-            } else {
-                showToast('未找到可提交的作品名字！');
             }
         }, order);
     };
@@ -2789,20 +2632,10 @@ ${extra.slice(0, 200).map(item => `- ${item.folder}`).join('\n')}
                                action: () => extractAllLinksEvent(2),
                                description: t.extractLikedLinksDescription
                            }, {
-                               text: t.submitLikedNamesText,
-                               icon: ' 📋 ',
-                               action: () => extractNameListEvent(2, 'liked'),
-                               description: t.submitLikedNamesDescription
-                           }, {
                                text: t.extractSavedLinksText,
                                icon: ' ⛓ ',
                                action: () => extractAllLinksEvent(1),
                                description: t.extractSavedLinksDescription
-                           }, {
-                               text: t.submitSavedNamesText,
-                               icon: ' 📋 ',
-                               action: () => extractNameListEvent(1, 'saved'),
-                               description: t.submitSavedNamesDescription
                            },);
         } else if (currentUrl.includes("https://www.xiaohongshu.com/search_result")) {
             menuItems.push({

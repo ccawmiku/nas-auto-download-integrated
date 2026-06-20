@@ -6,7 +6,6 @@ NAS 自动下载整合 compose，统一管理：
 - X/Twitter Likes 自动下载
 - Pixiv 收藏自动下载
 - 抖音点赞/收藏自动下载（f2）
-- Instagram 浏览器脚本提交链接 + Docker 端 yt-dlp 队列下载
 
 ## 运行方式
 
@@ -26,7 +25,7 @@ docker compose up -d
 默认镜像：
 
 ```text
-ghcr.io/ccawmiku/nas-auto-download-integrated:v1.7.3-dev
+ghcr.io/ccawmiku/nas-auto-download-integrated:v1.7.4-dev
 ```
 
 每次发布都会同步更新 `docker-compose.yml` 里的镜像版本。NAS 端更新时执行 `docker compose pull && docker compose up -d`，避免复用旧镜像 tag。
@@ -57,10 +56,6 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.7.3-dev
 /volume2/docker/nas-auto-download-integrated/douyin/f2/database
 /volume2/qinlong-debian/F2DL
 
-/volume2/docker/nas-auto-download-integrated/instagram/config
-/volume2/docker/nas-auto-download-integrated/instagram/queue
-/volume2/docker/nas-auto-download-integrated/instagram/state
-/volume2/se-p/ins
 ```
 
 需要调整时直接改 `docker-compose.yml`。
@@ -70,7 +65,7 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.7.3-dev
 打开 `http://NAS_IP:14001` 后：
 
 - 统一首页回到轻量 Python 控制台，不再引入 React/Vue/shadcn-ui，也不需要 Node 构建阶段
-- 首页总览显示小红书、X、Pixiv、抖音、Instagram 的服务状态、运行状态、当前任务和下次运行倒计时
+- 首页总览显示小红书、X、Pixiv、抖音的服务状态、运行状态、当前任务和下次运行倒计时
 - 服务入口只保留在侧边栏；子服务启动中时统一首页仍会先打开
 - 统一 Cookie 导入、从文件上传 `cookies.txt` 导入 Cookie 已移除
 - 小红书自动运行、无头浏览器采集、CloakBrowser 和旧统一 Cookie 导入已经完全移除
@@ -89,7 +84,6 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.7.3-dev
 - 抖音页面会检查关键字段和参考 `app.yaml` 的 64 个字段，字段不满会直接提示风险
 - 抖音页面支持手动停止当前运行中的任务，停止后不会继续后续 job
 - 抖音运行目录会生成本地 `conf/conf.yaml` 并默认关闭 f2 的 Bark 推送，避免未配置 Bark 时额外报 405 噪音
-- Instagram 推荐通过 `tools/userscripts/instagram-docker-queue.user.js` 在电脑浏览器采集已加载的 post/reel 链接；浏览器端上传已加载图片到 Docker，Docker 端默认只用 `yt-dlp` 下载视频/Reels，并按作品 ID 单独建文件夹
 - 统一首页使用侧边栏切换子页面，子页面不再额外注入返回条
 
 ## 小红书浏览器脚本队列

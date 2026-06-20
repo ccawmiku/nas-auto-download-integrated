@@ -15,12 +15,11 @@ sys.path.insert(0, str(ROOT / "_integrated"))
 sys.path.insert(0, str(ROOT / "_src" / "douyin-f2-auto-main"))
 sys.path.insert(0, str(ROOT / "_src" / "pixiv-auto-download-nas-main"))
 sys.path.insert(0, str(ROOT / "_src" / "XHS-Downloader-NAS-main"))
-sys.path.insert(0, str(ROOT / "_src" / "instagram-auto-download-nas-main"))
 
 import integrated_server
-from instagram_auto_worker import App as InstagramApp, media_files
 from douyin_f2_worker import (
     DOUYIN_REFERENCE_COOKIE_ORDER,
+    DEFAULT_CONFIG as DOUYIN_DEFAULT_CONFIG,
     F2SkipStopGuard,
     build_f2_runtime_conf,
     cookie_summary,
@@ -32,12 +31,11 @@ from pixiv_auto_worker import classify_error, safe_extract_zip
 from xhs_auto_worker import (
     RingLog as XhsRingLog,
     Store as XhsStore,
-    compare_xhs_library,
     cookie_summary_from_settings,
     is_transient_xhs_failure,
-    resolve_xhs_library_path,
     save_settings_cookie,
     sync_downloader_settings,
+    xhs_api_response_has_failure,
     xhs_api_segment_has_failure,
 )
 
@@ -45,7 +43,7 @@ from xhs_auto_worker import (
 class IntegratedPageTests(unittest.TestCase):
     def test_home_page_includes_version_and_service_cards(self) -> None:
         body = integrated_server.page().decode("utf-8")
-        self.assertIn("v1.7.3-dev", body)
+        self.assertIn("v1.7.4-dev", body)
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)
@@ -72,6 +70,9 @@ class IntegratedPageTests(unittest.TestCase):
 
 
 class DouyinCookieTests(unittest.TestCase):
+    def test_default_max_job_runtime_is_300_seconds(self) -> None:
+        self.assertEqual(DOUYIN_DEFAULT_CONFIG["max_job_runtime_seconds"], 300)
+
     def test_builds_bark_disabled_runtime_conf(self) -> None:
         runtime_conf = build_f2_runtime_conf(
             {"f2": {"enable_bark": True, "douyin": {"headers": {"Referer": "https://www.douyin.com/"}}}}
@@ -228,50 +229,22 @@ class XhsSettingsTests(unittest.TestCase):
 
     def test_detects_xhs_api_internal_download_failures(self) -> None:
         self.assertTrue(xhs_api_segment_has_failure("网络异常，作品 下载失败，错误信息: HTTPStatusError('400')"))
+        self.assertTrue(xhs_api_segment_has_failure("6a32bc4e000000000f028e9f 获取数据失败"))
+        self.assertTrue(xhs_api_segment_has_failure("获取小红书作品数据失败"))
+        self.assertTrue(xhs_api_segment_has_failure("6a32bc4e000000000f028e9f 提取数据失败"))
+        self.assertFalse(
+            xhs_api_segment_has_failure(
+                "网络异常，abc 下载失败，错误信息: ReadTimeout('')\n"
+                "文件 abc.webp 下载成功\n"
+                "作品处理完成：69eddca4000000001f004e2d"
+            )
+        )
         self.assertTrue(is_transient_xhs_failure("错误信息: ReadTimeout('') 网络异常"))
         self.assertTrue(is_transient_xhs_failure("RemoteProtocolError('peer closed connection')"))
+        self.assertTrue(xhs_api_response_has_failure({"message": "获取小红书作品数据失败", "data": None}))
+        self.assertTrue(xhs_api_response_has_failure({"message": "unknown", "data": None}))
+        self.assertFalse(xhs_api_response_has_failure({"message": "获取小红书作品数据成功", "data": {"作品ID": "abc"}}))
         self.assertFalse(xhs_api_segment_has_failure("作品处理完成：69eddca4000000001f004e2d"))
-
-    def test_compares_xhs_library_by_author_and_title(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "2026-06-15_10.32.53_小小的鼠_从今往后不会再离开您的身边了_指挥官").mkdir()
-            (root / "2026-06-15_04.32.01_猫猫真可爱ovo_我怎么这么可爱").mkdir()
-            result = compare_xhs_library(
-                [
-                    {"author": "小小的鼠", "title": "从今往后不会再离开您的身边了_指挥官"},
-                    {
-                        "author": "苏丹",
-                        "title": "知更鸟和二月七",
-                        "url": "https://www.xiaohongshu.com/discovery/item/missing",
-                    },
-                ],
-                root,
-            )
-            self.assertEqual(result["submitted_count"], 2)
-            self.assertEqual(result["local_count"], 2)
-            self.assertEqual(result["matched_count"], 1)
-            self.assertEqual(result["missing_count"], 1)
-            self.assertEqual(result["extra_count"], 1)
-            self.assertEqual(result["missing"][0]["title"], "知更鸟和二月七")
-            self.assertEqual(result["missing"][0]["url"], "https://www.xiaohongshu.com/discovery/item/missing")
-            self.assertEqual(result["extra"][0]["folder"], "2026-06-15_04.32.01_猫猫真可爱ovo_我怎么这么可爱")
-
-    def test_resolves_xhs_library_download_subfolder(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            download = root / "Download"
-            download.mkdir()
-            (download / "2026-06-15_10.32.53_小小的鼠_从今往后不会再离开您的身边了_指挥官").mkdir()
-            resolved = resolve_xhs_library_path({"work_path": str(root), "folder_name": "Download"}, {})
-            result = compare_xhs_library(
-                [{"author": "小小的鼠", "title": "从今往后不会再离开您的身边了_指挥官"}],
-                resolved,
-            )
-            self.assertEqual(resolved, download)
-            self.assertEqual(result["local_count"], 1)
-            self.assertEqual(result["matched_count"], 1)
-            self.assertEqual(result["work_path"], str(download))
 
     def test_xhs_retry_button_requeues_by_url(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -313,94 +286,6 @@ class XhsSettingsTests(unittest.TestCase):
                 self.assertEqual(second["skipped"], [url1, url2])
             finally:
                 integrated_server.XHS_QUEUE_FILE = old_queue_file
-
-    def test_instagram_link_queue_accepts_and_deduplicates_browser_submissions(self) -> None:
-        old_queue_file = integrated_server.INSTAGRAM_QUEUE_FILE
-        with tempfile.TemporaryDirectory() as tmp:
-            integrated_server.INSTAGRAM_QUEUE_FILE = Path(tmp) / "links.txt"
-            try:
-                url1 = "https://www.instagram.com/reel/ABC123/"
-                url2 = "https://www.instagram.com/p/DEF456/?utm_source=ig_web_copy_link"
-                urls, invalid = integrated_server.normalize_instagram_link_payload(
-                    {"urls": [url1, "not-a-url"], "text": f"duplicate {url1} plus {url2}"}
-                )
-                self.assertEqual(urls, [url1, "https://www.instagram.com/p/DEF456/"])
-                self.assertEqual(invalid, ["not-a-url"])
-
-                first = integrated_server.append_instagram_queue_links(urls)
-                self.assertEqual(first["accepted"], [url1, "https://www.instagram.com/p/DEF456/"])
-                self.assertEqual(first["skipped"], [])
-                self.assertIn(url1, integrated_server.INSTAGRAM_QUEUE_FILE.read_text(encoding="utf-8"))
-
-                second = integrated_server.append_instagram_queue_links([url1, "https://www.instagram.com/p/DEF456/"])
-                self.assertEqual(second["accepted"], [])
-                self.assertEqual(second["skipped"], [url1, "https://www.instagram.com/p/DEF456/"])
-            finally:
-                integrated_server.INSTAGRAM_QUEUE_FILE = old_queue_file
-
-    def test_instagram_downloaders_use_one_folder_per_post_and_split_libraries(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            config_path = root / "config.json"
-            config_path.write_text(
-                json.dumps(
-                    {
-                        "database": str(root / "state" / "instagram.sqlite3"),
-                        "queue_files": [str(root / "queue" / "links.txt")],
-                        "download_dir": str(root / "downloads"),
-                        "cookie_file": str(root / "config" / "instagram_cookies.txt"),
-                    }
-                ),
-                encoding="utf-8",
-            )
-            app = InstagramApp(config_path)
-            url = "https://www.instagram.com/p/DZZPc-2iSfI/"
-
-            self.assertFalse(app.config["download_images"])
-            self.assertTrue(app.config["download_videos"])
-            self.assertEqual(app.work_dir_for_url(url), root / "downloads" / "DZZPc-2iSfI")
-
-            image_cmd = app.gallery_dl_image_command(url)
-            video_cmd = app.yt_dlp_video_command(url)
-            self.assertEqual(image_cmd[0], "gallery-dl")
-            self.assertEqual(video_cmd[0], "yt-dlp")
-            self.assertIn("videos=false", image_cmd)
-            self.assertIn("previews=false", image_cmd)
-            self.assertIn(str(root / "downloads" / "DZZPc-2iSfI"), image_cmd)
-            self.assertIn(str(root / "downloads" / "DZZPc-2iSfI"), video_cmd)
-            self.assertFalse(any("%(uploader" in part for part in video_cmd))
-
-    def test_instagram_media_files_ignores_metadata_and_partials(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "a.jpg").write_text("image", encoding="utf-8")
-            (root / "a.info.json").write_text("{}", encoding="utf-8")
-            (root / "b.mp4.part").write_text("partial", encoding="utf-8")
-            self.assertEqual(media_files(root), {root / "a.jpg"})
-
-    def test_instagram_browser_image_upload_saves_under_post_folder_and_dedupes(self) -> None:
-        old_download_dir = integrated_server.INSTAGRAM_DOWNLOAD_DIR
-        with tempfile.TemporaryDirectory() as tmp:
-            integrated_server.INSTAGRAM_DOWNLOAD_DIR = Path(tmp)
-            try:
-                payload = {
-                    "post_url": "https://www.instagram.com/p/DZZPc-2iSfI/",
-                    "source_url": "https://scontent.cdninstagram.com/example.jpg",
-                    "filename": "example.jpg",
-                    "content_type": "image/jpeg",
-                    "data_base64": "aGVsbG8=",
-                }
-                first = integrated_server.save_instagram_browser_image(payload)
-                second = integrated_server.save_instagram_browser_image(payload)
-                self.assertEqual(first["note_id"], "DZZPc-2iSfI")
-                self.assertFalse(first["skipped"])
-                self.assertTrue(second["skipped"])
-                saved = Path(first["path"])
-                self.assertTrue(saved.exists())
-                self.assertEqual(saved.read_bytes(), b"hello")
-                self.assertEqual(saved.parent, Path(tmp) / "DZZPc-2iSfI" / "browser-images")
-            finally:
-                integrated_server.INSTAGRAM_DOWNLOAD_DIR = old_download_dir
 
 
 class PixivNetworkTests(unittest.TestCase):

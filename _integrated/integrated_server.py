@@ -13,8 +13,6 @@ import sys
 import threading
 import time
 import yaml
-import base64
-import hashlib
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -34,12 +32,9 @@ except ModuleNotFoundError:
 
 PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
-APP_VERSION = os.environ.get("APP_VERSION", "v1.7.3-dev")
+APP_VERSION = os.environ.get("APP_VERSION", "v1.7.4-dev")
 XHS_QUEUE_FILE = Path(os.environ.get("XHS_QUEUE_FILE", "/queue/xhs/links.txt"))
-INSTAGRAM_QUEUE_FILE = Path(os.environ.get("INSTAGRAM_QUEUE_FILE", "/queue/instagram/links.txt"))
 MAX_XHS_API_BODY_BYTES = 5_000_000
-MAX_INSTAGRAM_IMAGE_BODY_BYTES = int(os.environ.get("MAX_INSTAGRAM_IMAGE_BODY_BYTES", str(30 * 1024 * 1024)))
-INSTAGRAM_DOWNLOAD_DIR = Path(os.environ.get("INSTAGRAM_DOWNLOAD_DIR", "/downloads/instagram"))
 DOUYIN_CONFIG_PATH = Path(os.environ.get("DOUYIN_CONFIG_PATH", "/config/douyin/config.json"))
 DOUYIN_COOKIE_YAML_PLACEHOLDER = "__DOUYIN_COOKIE_PLACEHOLDER__"
 DEFAULT_DOUYIN_CONFIG: dict[str, Any] = {
@@ -78,7 +73,6 @@ SERVICES = {
     "x": {"name": "X", "port": 18082, "path": "/x/", "config": "/config/x/config.json"},
     "pixiv": {"name": "Pixiv", "port": 18083, "path": "/pixiv/", "config": "/config/pixiv/config.json"},
     "douyin": {"name": "抖音", "port": 18084, "path": "/douyin/", "config": "/config/douyin/config.json"},
-    "instagram": {"name": "Instagram", "port": 18085, "path": "/instagram/", "config": "/config/instagram/config.json"},
 }
 
 DOUYIN_REFERENCE_COOKIE_ORDER = (
@@ -192,17 +186,10 @@ XHS_NOTE_URL_RE = re.compile(
     r"https?://(?:www\.)?(?:xiaohongshu\.com|xhslink\.com)/[^\s\"'<>]+",
     re.IGNORECASE,
 )
-INSTAGRAM_URL_RE = re.compile(
-    r"https?://(?:www\.)?instagram\.com/(?:p|reel|tv)/[A-Za-z0-9_-]+/?[^\s\"'<>]*",
-    re.IGNORECASE,
-)
-
-
 processes: list[tuple[str, subprocess.Popen]] = []
 log_lines: list[str] = []
 log_lock = threading.Lock()
 xhs_queue_lock = threading.Lock()
-instagram_queue_lock = threading.Lock()
 
 
 def log(message: str) -> None:
@@ -302,32 +289,16 @@ def ensure_configs() -> None:
             "web": {"host": "127.0.0.1", "port": 18084},
         },
     )
-    ensure_config(
-        Path("/config/instagram/config.json"),
-        ROOT / "instagram" / "config.example.json",
-        {
-            "database": "/state/instagram/instagram_queue.sqlite3",
-            "queue_files": ["/queue/instagram/links.txt"],
-            "download_dir": "/downloads/instagram",
-            "cookie_file": "/config/instagram/instagram_cookies.txt",
-            "download_images": False,
-            "download_videos": True,
-            "web": {"host": "127.0.0.1", "port": 18085},
-        },
-    )
     for path in [
         Path("/queue/xhs"),
-        Path("/queue/instagram"),
         Path("/state/xhs"),
         Path("/state/x"),
         Path("/state/pixiv"),
         Path("/state/douyin/f2"),
-        Path("/state/instagram"),
         Path("/downloads/x/images"),
         Path("/downloads/x/videos"),
         Path("/downloads/x/downloads-metadata"),
         Path("/downloads/pixiv"),
-        Path("/downloads/instagram"),
         Path("/F2DL"),
     ]:
         path.mkdir(parents=True, exist_ok=True)
@@ -402,13 +373,6 @@ def start_children() -> None:
         [sys.executable, "/opt/nas-auto/douyin/douyin_f2_worker.py", "--config", "/config/douyin/config.json"],
         "/opt/nas-auto/douyin",
     )
-    start_process(
-        "instagram-worker",
-        [sys.executable, "/opt/nas-auto/instagram/instagram_auto_worker.py", "--config", "/config/instagram/config.json"],
-        "/opt/nas-auto/instagram",
-    )
-
-
 def parse_cookie_pairs(text: str) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
     seen: set[str] = set()
@@ -694,127 +658,6 @@ def append_xhs_queue_links(urls: list[str]) -> dict[str, Any]:
         }
 
 
-def extract_instagram_urls_from_text(text: str) -> list[str]:
-    urls: list[str] = []
-    for match in INSTAGRAM_URL_RE.finditer(str(text or "")):
-        raw = match.group(0).strip().rstrip("),.;，。；").split("#", 1)[0]
-        permalink = re.search(r"instagram\.com/((?:p|reel|tv)/[A-Za-z0-9_-]+)", raw, re.IGNORECASE)
-        if permalink:
-            urls.append(f"https://www.instagram.com/{permalink.group(1)}/")
-    return dedupe_ordered(urls)
-
-
-def instagram_note_id_from_url(url: str) -> str:
-    match = re.search(r"instagram\.com/(?:p|reel|tv)/([A-Za-z0-9_-]+)", str(url or ""), re.IGNORECASE)
-    return match.group(1) if match else ""
-
-
-def normalize_instagram_link_payload(payload: dict[str, Any]) -> tuple[list[str], list[str]]:
-    candidates: list[str] = []
-    if isinstance(payload.get("urls"), list):
-        candidates.extend(str(item) for item in payload["urls"])
-    if payload.get("url"):
-        candidates.append(str(payload["url"]))
-    if payload.get("text"):
-        candidates.extend(extract_instagram_urls_from_text(str(payload["text"])))
-
-    urls: list[str] = []
-    invalid: list[str] = []
-    for raw in candidates:
-        value = str(raw or "").strip()
-        if not value:
-            continue
-        found = extract_instagram_urls_from_text(value)
-        if found:
-            urls.extend(found)
-        else:
-            invalid.append(value[:200])
-    return dedupe_ordered(urls), invalid
-
-
-def extension_from_content_type(content_type: str, fallback_name: str = "") -> str:
-    lower = str(content_type or "").split(";", 1)[0].strip().lower()
-    mapping = {
-        "image/jpeg": ".jpg",
-        "image/jpg": ".jpg",
-        "image/png": ".png",
-        "image/webp": ".webp",
-        "image/gif": ".gif",
-    }
-    if lower in mapping:
-        return mapping[lower]
-    suffix = Path(str(fallback_name or "")).suffix.lower()
-    return suffix if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif"} else ".jpg"
-
-
-def save_instagram_browser_image(payload: dict[str, Any]) -> dict[str, Any]:
-    urls, _invalid = normalize_instagram_link_payload(payload)
-    post_url = urls[0] if urls else ""
-    note_id = instagram_note_id_from_url(post_url or str(payload.get("post_url") or ""))
-    if not note_id:
-        raise ValueError("缺少有效 Instagram 作品链接")
-    data_base64 = str(payload.get("data_base64") or "")
-    if "," in data_base64 and data_base64.split(",", 1)[0].startswith("data:"):
-        data_base64 = data_base64.split(",", 1)[1]
-    try:
-        content = base64.b64decode(data_base64, validate=True)
-    except Exception as error:
-        raise ValueError(f"图片 base64 无效：{error}") from error
-    if not content:
-        raise ValueError("图片内容为空")
-    digest = hashlib.sha256(content).hexdigest()
-    ext = extension_from_content_type(str(payload.get("content_type") or ""), str(payload.get("filename") or ""))
-    target_dir = INSTAGRAM_DOWNLOAD_DIR / note_id / "browser-images"
-    target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / f"browser_{digest[:16]}{ext}"
-    existed = target.exists()
-    if not existed:
-        target.write_bytes(content)
-    source_url = str(payload.get("source_url") or "")
-    meta = {
-        "post_url": post_url,
-        "source_url": source_url,
-        "content_type": str(payload.get("content_type") or ""),
-        "size": len(content),
-        "sha256": digest,
-        "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-    }
-    meta_path = target.with_suffix(target.suffix + ".json")
-    if not meta_path.exists():
-        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-    return {
-        "note_id": note_id,
-        "path": str(target),
-        "relative_path": str(target.relative_to(INSTAGRAM_DOWNLOAD_DIR)),
-        "size": len(content),
-        "sha256": digest,
-        "skipped": existed,
-    }
-
-
-def append_instagram_queue_links(urls: list[str]) -> dict[str, Any]:
-    INSTAGRAM_QUEUE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with instagram_queue_lock:
-        existing: set[str] = set()
-        if INSTAGRAM_QUEUE_FILE.exists():
-            try:
-                existing.update(extract_instagram_urls_from_text(INSTAGRAM_QUEUE_FILE.read_text(encoding="utf-8-sig")))
-            except OSError:
-                existing = set()
-        accepted = [url for url in urls if url not in existing]
-        if accepted:
-            with INSTAGRAM_QUEUE_FILE.open("a", encoding="utf-8") as handle:
-                if INSTAGRAM_QUEUE_FILE.stat().st_size > 0:
-                    handle.write("\n")
-                handle.write("\n".join(accepted))
-                handle.write("\n")
-        return {
-            "accepted": accepted,
-            "skipped": [url for url in urls if url in existing],
-            "queue_file": str(INSTAGRAM_QUEUE_FILE),
-        }
-
-
 def trigger_xhs_worker_run() -> dict[str, Any]:
     svc = SERVICES["xhs"]
     conn = http.client.HTTPConnection("127.0.0.1", int(svc["port"]), timeout=10)
@@ -862,19 +705,6 @@ def post_xhs_worker(path: str, payload: dict[str, Any], timeout: int = 30) -> di
         return {"ok": False, "status": 0, "error": str(error)}
     finally:
         conn.close()
-
-
-def compare_xhs_library_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    items = payload.get("items") if isinstance(payload.get("items"), list) else []
-    return post_xhs_worker(
-        "/api/library-compare",
-        {
-            "items": items,
-            "source": str(payload.get("source") or payload.get("kind") or ""),
-            "page": str(payload.get("page") or ""),
-            "submitted_at": str(payload.get("submitted_at") or ""),
-        },
-    )
 
 
 def page(message: str = "") -> bytes:
@@ -1202,97 +1032,11 @@ class Handler(BaseHTTPRequestHandler):
                     else "存在无效链接或未识别到有效小红书链接。"
                 ),
             }
-            compare_result: dict[str, Any] | None = None
-            if isinstance(payload.get("items"), list) and payload["items"]:
-                compare_result = compare_xhs_library_from_payload(payload)
-                result["library_compare"] = compare_result.get("result", compare_result)
             log(
                 f"浏览器脚本提交小红书链接：valid={len(urls)} accepted={len(accepted)} "
-                f"skipped={len(skipped)} invalid={len(invalid)} trigger={trigger_result.get('ok')} "
-                f"compare={compare_result.get('ok') if compare_result else 'skip'}"
-            )
-            self.send_json_payload(result)
-            return
-        if split.path == "/api/xhs/library":
-            length = int(self.headers.get("Content-Length", "0") or 0)
-            if length > MAX_XHS_API_BODY_BYTES:
-                self.send_json_payload({"ok": False, "error": "请求体过大"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
-                return
-            try:
-                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-            except json.JSONDecodeError as error:
-                self.send_json_payload({"ok": False, "error": f"JSON 解析失败：{error}"}, HTTPStatus.BAD_REQUEST)
-                return
-            if not isinstance(payload, dict):
-                self.send_json_payload({"ok": False, "error": "请求体必须是 JSON 对象"}, HTTPStatus.BAD_REQUEST)
-                return
-            result = compare_xhs_library_from_payload(payload)
-            status = HTTPStatus.OK if result.get("ok") else HTTPStatus.BAD_GATEWAY
-            log(
-                "浏览器脚本提交小红书名单对比："
-                f"items={len(payload.get('items') or [])} ok={result.get('ok')}"
-            )
-            self.send_json_payload(result, status)
-            return
-        if split.path == "/api/instagram/links":
-            length = int(self.headers.get("Content-Length", "0") or 0)
-            if length > MAX_XHS_API_BODY_BYTES:
-                self.send_json_payload({"ok": False, "error": "请求体过大"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
-                return
-            try:
-                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-            except json.JSONDecodeError as error:
-                self.send_json_payload({"ok": False, "error": f"JSON 解析失败：{error}"}, HTTPStatus.BAD_REQUEST)
-                return
-            if not isinstance(payload, dict):
-                self.send_json_payload({"ok": False, "error": "请求体必须是 JSON 对象"}, HTTPStatus.BAD_REQUEST)
-                return
-            urls, invalid = normalize_instagram_link_payload(payload)
-            queue_result = append_instagram_queue_links(urls)
-            trigger_result = trigger_service_run("instagram") if urls else {"ok": False, "status": 0, "body": "没有有效链接"}
-            accepted = queue_result["accepted"]
-            skipped = queue_result["skipped"]
-            ok = bool(urls) and not invalid and len(urls) == len(accepted) + len(skipped)
-            log(
-                f"浏览器脚本提交 Instagram 链接：valid={len(urls)} accepted={len(accepted)} "
                 f"skipped={len(skipped)} invalid={len(invalid)} trigger={trigger_result.get('ok')}"
             )
-            self.send_json_payload(
-                {
-                    "ok": ok,
-                    "submitted": len(urls) + len(invalid),
-                    "valid": len(urls),
-                    "accepted": len(accepted),
-                    "skipped": len(skipped),
-                    "invalid": invalid,
-                    "queue_file": queue_result["queue_file"],
-                    "triggered": trigger_result,
-                }
-            )
-            return
-        if split.path == "/api/instagram/browser-image":
-            length = int(self.headers.get("Content-Length", "0") or 0)
-            if length > MAX_INSTAGRAM_IMAGE_BODY_BYTES:
-                self.send_json_payload({"ok": False, "error": "图片请求体过大"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
-                return
-            try:
-                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-            except json.JSONDecodeError as error:
-                self.send_json_payload({"ok": False, "error": f"JSON 解析失败：{error}"}, HTTPStatus.BAD_REQUEST)
-                return
-            if not isinstance(payload, dict):
-                self.send_json_payload({"ok": False, "error": "请求体必须是 JSON 对象"}, HTTPStatus.BAD_REQUEST)
-                return
-            try:
-                saved = save_instagram_browser_image(payload)
-            except ValueError as error:
-                self.send_json_payload({"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
-                return
-            log(
-                "浏览器脚本上传 Instagram 图片："
-                f"note={saved['note_id']} size={saved['size']} skipped={saved['skipped']}"
-            )
-            self.send_json_payload({"ok": True, **saved})
+            self.send_json_payload(result)
             return
         for key, svc in SERVICES.items():
             if split.path.startswith(svc["path"]):

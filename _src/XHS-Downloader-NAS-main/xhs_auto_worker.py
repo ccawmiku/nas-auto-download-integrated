@@ -42,16 +42,25 @@ NOTE_URL_RE = re.compile(
     re.IGNORECASE,
 )
 NOTE_ID_RE = re.compile(r"/(?:explore|discovery/item)/([0-9a-zA-Z_-]+)", re.IGNORECASE)
-XHS_API_FAILURE_MARKERS = (
-    "下载失败",
-    "网络异常",
-    "HTTPStatusError",
-    "ReadTimeout",
-    "RemoteProtocolError",
-    "peer closed",
+XHS_API_SUCCESS_MARKERS = (
+    "获取小红书作品数据成功",
+    "作品处理完成",
+    "文件已存在，跳过下载",
+    "存在下载记录，跳过处理",
+    "下载功能已关闭，跳过下载",
+)
+XHS_API_FATAL_FAILURE_MARKERS = (
+    "获取小红书作品数据失败",
+    "提取小红书作品链接失败",
+    "提取作品文件下载地址失败",
+    "获取数据失败",
+    "提取数据失败",
+    "未知的作品类型",
     "Traceback",
     "Exception",
 )
+XHS_API_DOWNLOAD_FAILURE_RE = re.compile(r"网络异常，(.+?) 下载失败")
+XHS_API_DOWNLOAD_SUCCESS_RE = re.compile(r"文件 (.+?) 下载成功")
 XHS_TRANSIENT_FAILURE_MARKERS = (
     "网络异常",
     "ReadTimeout",
@@ -277,96 +286,34 @@ def read_file_since(path: Path, offset: int, max_bytes: int = 120000) -> str:
         return ""
 
 
-def normalize_compare_text(value: str) -> str:
-    text = str(value or "").strip().lower()
-    return re.sub(r"[\s_\-:：.。·,，!！?？'\"“”‘’()[\]【】{}]+", "", text)
-
-
-def strip_xhs_date_prefix(folder_name: str) -> str:
-    return re.sub(r"^\d{4}-\d{2}-\d{2}[_ ]\d{2}[.:]\d{2}[.:]\d{2}_", "", str(folder_name or ""), count=1)
-
-
-def local_folder_record(path: Path) -> dict[str, str]:
-    body = strip_xhs_date_prefix(path.name)
-    parts = body.split("_", 1)
-    author = parts[0].strip() if parts else ""
-    title = parts[1].strip() if len(parts) > 1 else body.strip()
-    return {
-        "folder": path.name,
-        "author": author,
-        "title": title,
-        "key": f"{normalize_compare_text(author)}|{normalize_compare_text(title)}",
-        "title_key": normalize_compare_text(title),
-    }
-
-
-def submitted_item_record(item: dict[str, Any]) -> dict[str, str]:
-    author = str(item.get("author") or item.get("nickname") or "").strip()
-    title = str(item.get("title") or item.get("name") or "").strip()
-    return {
-        "id": str(item.get("id") or item.get("note_id") or "").strip(),
-        "url": str(item.get("url") or "").strip(),
-        "author": author,
-        "title": title,
-        "key": f"{normalize_compare_text(author)}|{normalize_compare_text(title)}",
-        "title_key": normalize_compare_text(title),
-    }
-
-
-def compare_xhs_library(items: list[dict[str, Any]], work_path: Path) -> dict[str, Any]:
-    submitted = [submitted_item_record(item) for item in items if isinstance(item, dict)]
-    submitted = [item for item in submitted if item["title_key"]]
-    local: list[dict[str, str]] = []
-    if work_path.exists() and work_path.is_dir():
-        for path in work_path.iterdir():
-            if path.is_dir():
-                local.append(local_folder_record(path))
-    local_by_key = {item["key"]: item for item in local if item["key"]}
-    local_by_title: dict[str, list[dict[str, str]]] = {}
-    for item in local:
-        if item["title_key"]:
-            local_by_title.setdefault(item["title_key"], []).append(item)
-
-    matched_local_folders: set[str] = set()
-    matched: list[dict[str, Any]] = []
-    missing: list[dict[str, Any]] = []
-    for item in submitted:
-        local_item = local_by_key.get(item["key"])
-        if local_item is None:
-            candidates = local_by_title.get(item["title_key"], [])
-            local_item = candidates[0] if candidates else None
-        if local_item is None:
-            missing.append(item)
-            continue
-        matched_local_folders.add(local_item["folder"])
-        matched.append({**item, "folder": local_item["folder"]})
-    extra = [item for item in local if item["folder"] not in matched_local_folders]
-    return {
-        "submitted_count": len(submitted),
-        "local_count": len(local),
-        "matched_count": len(matched),
-        "missing_count": len(missing),
-        "extra_count": len(extra),
-        "matched": matched[:500],
-        "missing": missing[:5000],
-        "extra": extra[:500],
-        "work_path": str(work_path),
-        "checked_at": now_iso(),
-    }
-
-
-def resolve_xhs_library_path(settings: dict[str, Any], config: dict[str, Any]) -> Path:
-    base = Path(str(settings.get("work_path") or config.get("work_path") or DEFAULT_DOWNLOADER_SETTINGS["work_path"]))
-    folder_name = str(settings.get("folder_name") or DEFAULT_DOWNLOADER_SETTINGS["folder_name"] or "").strip()
-    if folder_name:
-        nested = base / folder_name
-        if nested.exists() and nested.is_dir():
-            return nested
-    return base
-
-
 def xhs_api_segment_has_failure(text: str) -> bool:
-    return any(marker in str(text or "") for marker in XHS_API_FAILURE_MARKERS)
+    segment = str(text or "")
+    if any(marker in segment for marker in XHS_API_FATAL_FAILURE_MARKERS):
+        return True
+    failed_names = {match.group(1).strip() for match in XHS_API_DOWNLOAD_FAILURE_RE.finditer(segment)}
+    if not failed_names:
+        return False
+    for match in XHS_API_DOWNLOAD_SUCCESS_RE.finditer(segment):
+        success_name = match.group(1).strip()
+        for failed_name in list(failed_names):
+            if success_name == failed_name or success_name.startswith(f"{failed_name}."):
+                failed_names.discard(failed_name)
+    return bool(failed_names)
+
+
+def xhs_api_segment_has_success(text: str) -> bool:
+    return any(marker in str(text or "") for marker in XHS_API_SUCCESS_MARKERS)
+
+
+def xhs_api_response_has_failure(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    message = str(payload.get("message") or "")
+    if xhs_api_segment_has_failure(message):
+        return True
+    if "data" in payload and not payload.get("data") and not xhs_api_segment_has_success(message):
+        return True
+    return False
 
 
 def is_transient_xhs_failure(text: str) -> bool:
@@ -674,6 +621,12 @@ def post_download(api_url: str, url: str, *, skip: bool, timeout: int) -> tuple[
     response = requests.post(api_url, json=body, timeout=timeout)
     text = response.text[:2000]
     if 200 <= response.status_code < 300:
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+        if xhs_api_response_has_failure(payload):
+            return False, text or f"HTTP {response.status_code}"
         return True, text or f"HTTP {response.status_code}"
     return False, f"HTTP {response.status_code}: {text}"
 
@@ -687,7 +640,6 @@ class App:
         self.running = False
         self.run_lock = threading.Lock()
         self.last_run_message = ""
-        self.last_library_compare: dict[str, Any] = {}
         self.progress: dict[str, Any] = {"phase": "idle", "current_url": ""}
         self.progress_lock = threading.Lock()
         sync_downloader_settings(self.config)
@@ -828,19 +780,6 @@ class App:
         self.log.write(self.last_run_message)
         return changed
 
-    def compare_library(self, items: list[dict[str, Any]], source: str = "") -> dict[str, Any]:
-        settings = sync_downloader_settings(self.config)
-        work_path = resolve_xhs_library_path(settings, self.config)
-        result = compare_xhs_library(items, work_path)
-        result["source"] = source
-        self.last_library_compare = result
-        self.log.write(
-            "小红书本地目录对比："
-            f"网页 {result['submitted_count']}，本地 {result['local_count']}，"
-            f"缺少 {result['missing_count']}，本地多余 {result['extra_count']}"
-        )
-        return result
-
     def status(self) -> dict[str, Any]:
         log_limit = int(self.config.get("web", {}).get("log_lines", 5000))
         api_log_path = Path(str(self.config.get("xhs_api_log_file") or "/xhs-volume/xhs-api.log"))
@@ -855,7 +794,6 @@ class App:
             "xhs_api_logs": tail_file(api_log_path, min(log_limit, 3000)),
             "settings_cookie": cookie_summary_from_settings(self.config),
             "last_run_message": self.last_run_message,
-            "library_compare": self.last_library_compare,
             "progress": self.get_progress(),
         }
 
@@ -874,9 +812,7 @@ def html_page(app: App) -> str:
     )
     style = app_css(
         """
-.split{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 .log-grid{display:grid;grid-template-columns:1fr;gap:16px}
-.queue-form textarea{min-height:180px}
 .wide-table{overflow:auto}
 .status-dot{display:inline-block;width:8px;height:8px;border-radius:999px;margin-right:6px;background:var(--muted)}
 .status-pending .status-dot{background:var(--warn)}
@@ -885,10 +821,7 @@ def html_page(app: App) -> str:
 .status-failed .status-dot{background:var(--danger)}
 button.danger{background:var(--danger)}
 button.danger:hover{background:#8f1d14;box-shadow:0 6px 16px rgba(180,35,24,.18)}
-.compare-columns{display:grid;grid-template-columns:1fr 1fr;gap:12px}.compare-list{max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:8px;background:var(--panel-soft);padding:10px}
-.compare-list h3{font-size:14px;margin:0 0 8px}.compare-list ul{margin:0;padding-left:18px}.compare-list li{margin:4px 0;overflow-wrap:anywhere}
 pre{max-height:680px}
-@media(max-width:900px){.split,.compare-columns{grid-template-columns:1fr}}
         """
     )
     return f"""<!doctype html>
@@ -934,44 +867,20 @@ pre{max-height:680px}
         <div class="actions"><button type="submit">保存下载节奏</button></div>
       </form>
     </section>
-    <div class="split">
-      <section class="queue-form">
-        <h2>从网页端发过来的链接</h2>
-        <form method="post" action="/submit-links">
-          <label>批量粘贴小红书作品链接</label>
-          <textarea name="links" placeholder="https://www.xiaohongshu.com/discovery/item/..."></textarea>
-          <div class="actions"><button type="submit">加入队列并开始下载</button></div>
-        </form>
-      </section>
-      <section>
-        <h2>XHS-Downloader Cookie</h2>
-        <form method="post" action="/settings-cookie">
-          <div class="help">这里写入的是 JoeanAmier/XHS-Downloader 2.7 使用的 <code>settings.json</code> 里的 <code>cookie</code> 字段，不再使用旧的自动采集 Cookie。</div>
-          <label>Cookie Header</label>
-          <textarea name="cookie_text" placeholder="a1=...; web_session=..."></textarea>
-          <div class="actions"><button type="submit">保存到 settings.json</button></div>
-        </form>
-        <div class="help" id="cookieSummary"></div>
-      </section>
-    </div>
+    <section>
+      <h2>XHS-Downloader Cookie</h2>
+      <form method="post" action="/settings-cookie">
+        <div class="help">这里写入的是 JoeanAmier/XHS-Downloader 2.7 使用的 <code>settings.json</code> 里的 <code>cookie</code> 字段，不再使用旧的自动采集 Cookie。</div>
+        <label>Cookie Header</label>
+        <textarea name="cookie_text" placeholder="a1=...; web_session=..."></textarea>
+        <div class="actions"><button type="submit">保存到 settings.json</button></div>
+      </form>
+      <div class="help" id="cookieSummary"></div>
+    </section>
     <section>
       <h2>错误列表</h2>
       <div class="actions"><button class="secondary" id="retryAllErrors" type="button">全部重试</button></div>
       <div class="wide-table"><table><thead><tr><th>作品</th><th>状态</th><th>次数</th><th>下次重试</th><th>更新时间</th><th>错误</th><th>操作</th></tr></thead><tbody id="errorsBody"></tbody></table></div>
-    </section>
-    <section>
-      <h2>本地目录对比</h2>
-      <div class="progress-grid">
-        <div class="metric"><span class="label">网页提交</span><strong id="compareSubmitted">0</strong></div>
-        <div class="metric"><span class="label">本地文件夹</span><strong id="compareLocal">0</strong></div>
-        <div class="metric"><span class="label">本地还没有</span><strong id="compareMissing">0</strong></div>
-        <div class="metric"><span class="label">本地多余</span><strong id="compareExtra">0</strong></div>
-      </div>
-      <div class="help" id="compareMeta">等待 userscript 提交点赞/收藏名单。</div>
-      <div class="compare-columns">
-        <div class="compare-list"><h3>本地还没有</h3><ul id="missingList"></ul></div>
-        <div class="compare-list"><h3>本地多余</h3><ul id="extraList"></ul></div>
-      </div>
     </section>
     <section>
       <h2>最近链接</h2>
@@ -1035,18 +944,6 @@ pre{max-height:680px}
           <td><button class="secondary retry-note" type="button" data-note-id="${{esc(n.note_id)}}" data-url="${{esc(n.url)}}">重试</button></td>
         </tr>`).join("");
     }}
-    function renderCompare(compare) {{
-      compare = compare || {{}};
-      $("compareSubmitted").textContent = compare.submitted_count || 0;
-      $("compareLocal").textContent = compare.local_count || 0;
-      $("compareMissing").textContent = compare.missing_count || 0;
-      $("compareExtra").textContent = compare.extra_count || 0;
-      $("compareMeta").textContent = compare.checked_at
-        ? `检查时间：${{compare.checked_at}}；目录：${{compare.work_path || ""}}；来源：${{compare.source || ""}}`
-        : "等待 userscript 提交点赞/收藏名单。";
-      $("missingList").innerHTML = (compare.missing || []).map((item) => `<li>${{esc(item.author)}}_${{esc(item.title)}}</li>`).join("");
-      $("extraList").innerHTML = (compare.extra || []).map((item) => `<li>${{esc(item.folder || item.title || "")}}</li>`).join("");
-    }}
     function renderCookie(summary) {{
       const missing = (summary?.missing_required || []).join(", ") || "无";
       $("cookiePill").textContent = `Cookie：${{summary?.present ? "已保存" : "未保存"}}`;
@@ -1067,7 +964,6 @@ pre{max-height:680px}
         $("currentUrl").textContent = progress.current_url ? `当前：${{progress.current_url}}` : (data.last_run_message || "");
         renderErrors(data.error_notes || []);
         renderNotes(data.notes || []);
-        renderCompare(data.library_compare || {{}});
         renderCookie(data.settings_cookie || {{}});
         updateLogs("apiLogBox", data.xhs_api_logs || []);
         updateLogs("logBox", data.logs || []);
@@ -1182,16 +1078,6 @@ def make_handler(app: App):
                 if changed:
                     RUN_NOW_EVENT.set()
                 send_json(self, {"ok": True, "changed": changed})
-                return
-            if self.path == "/api/library-compare":
-                try:
-                    payload = json.loads(raw or "{}") if "application/json" in content_type else {}
-                except json.JSONDecodeError as error:
-                    send_json(self, {"ok": False, "error": str(error)}, HTTPStatus.BAD_REQUEST)
-                    return
-                items = payload.get("items") if isinstance(payload.get("items"), list) else []
-                result = app.compare_library(items, str(payload.get("source") or payload.get("kind") or ""))
-                send_json(self, {"ok": True, "result": result})
                 return
             form = parse_qs(raw)
             if self.path == "/run":

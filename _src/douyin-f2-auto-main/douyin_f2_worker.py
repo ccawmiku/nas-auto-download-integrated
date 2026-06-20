@@ -45,6 +45,7 @@ DEFAULT_CONFIG_PATH = Path("/config/config.json")
 DEFAULT_CONFIG: dict[str, Any] = {
     "run_interval_hours": 12,
     "run_timeout_seconds": 180,
+    "max_job_runtime_seconds": 300,
     "fallback_stop_consecutive_skipped": 10,
     "cookie_file": "/config/douyin/douyin_cookie.txt",
     "f2_state_dir": "/state/douyin/f2",
@@ -804,6 +805,7 @@ class App:
             return RunResult(key, "skipped", None, started_at, now_iso(), message)
         config_path = self.f2_config_for_job(job, index)
         fallback_stop = int(self.config.get("fallback_stop_consecutive_skipped") or 10)
+        max_runtime = max(0, int(self.config.get("max_job_runtime_seconds") or 300))
         guard = F2SkipStopGuard(fallback_stop)
         command = [sys.executable, "-m", "f2", "dy", "-c", str(config_path)]
         env = dict(os.environ)
@@ -823,6 +825,7 @@ class App:
             self.current_proc = proc
         assert proc.stdout is not None
         stopped_by_guard = False
+        stopped_by_timeout = False
 
         def reader() -> None:
             nonlocal stopped_by_guard
@@ -844,7 +847,16 @@ class App:
         thread = threading.Thread(target=reader, daemon=True)
         thread.start()
         try:
-            returncode = proc.wait()
+            returncode = proc.wait(timeout=max_runtime if max_runtime > 0 else None)
+        except subprocess.TimeoutExpired:
+            stopped_by_timeout = True
+            self.log.write(f"{key}: 达到最大运行时长 {max_runtime} 秒，已停止本项目")
+            try:
+                proc.terminate()
+                returncode = proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                returncode = proc.wait()
         finally:
             with self.current_proc_lock:
                 if self.current_proc is proc:
@@ -855,6 +867,9 @@ class App:
         if stopped_by_guard:
             status = "done"
             message = f"连续 {guard.consecutive_skipped} 个作品均为跳过，已停止本项目"
+        elif stopped_by_timeout:
+            status = "done"
+            message = f"达到最大运行时长 {max_runtime} 秒，已停止本项目"
         elif self.stop_run_event.is_set() and returncode not in {0, None}:
             status = "stopped"
             message = "已手动停止"
@@ -1024,6 +1039,7 @@ def html_page(app: App) -> str:
 <section><h2>配置</h2><form method="post" action="/settings">
 <div class="grid"><label>运行间隔（小时）<input name="run_interval_hours" type="number" min="0.1" step="0.1" value="{html.escape(str(cfg.get("run_interval_hours") or 12))}"></label>
 <label>连续跳过作品停止数<input name="fallback_stop_consecutive_skipped" type="number" min="1" step="1" value="{html.escape(str(cfg.get("fallback_stop_consecutive_skipped") or 10))}"></label>
+<label>最大运行时长（秒）<input name="max_job_runtime_seconds" type="number" min="0" step="1" value="{html.escape(str(cfg.get("max_job_runtime_seconds") or 300))}"></label>
 <label>下载目录<input name="download_dir" value="{html.escape(str(cfg.get("download_dir") or ""))}"></label>
 <label>f2 数据目录<input name="f2_state_dir" value="{html.escape(str(cfg.get("f2_state_dir") or ""))}"></label></div>
 {jobs_html}
@@ -1151,10 +1167,18 @@ def make_handler(app: App):
                     )
                 except ValueError:
                     fallback_stop = 10
+                try:
+                    max_job_runtime = max(
+                        0,
+                        int((form.get("max_job_runtime_seconds") or ["300"])[0] or "300"),
+                    )
+                except ValueError:
+                    max_job_runtime = 300
                 app.save_config(
                     {
                         "run_interval_hours": hours,
                         "fallback_stop_consecutive_skipped": fallback_stop,
+                        "max_job_runtime_seconds": max_job_runtime,
                         "download_dir": (form.get("download_dir") or [app.config.get("download_dir")])[0],
                         "f2_state_dir": (form.get("f2_state_dir") or [app.config.get("f2_state_dir")])[0],
                         "jobs": jobs,
