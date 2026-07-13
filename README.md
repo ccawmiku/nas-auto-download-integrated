@@ -1,6 +1,6 @@
-# NAS Auto Download Integrated
+# NAS 多平台媒体自动下载整合服务
 
-NAS 自动下载整合 compose，统一管理：
+通过一套 Docker Compose 和中文控制台统一管理多个媒体下载任务：
 
 - 小红书浏览器脚本提交链接 + Docker 端下载（自动采集默认关闭）
 - X/Twitter Likes 自动下载
