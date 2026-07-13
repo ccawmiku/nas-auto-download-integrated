@@ -12,6 +12,7 @@ from pixivpy3.utils import PixivError
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "_integrated"))
+sys.path.insert(0, str(ROOT / "_common"))
 sys.path.insert(0, str(ROOT / "_src" / "douyin-f2-auto-main"))
 sys.path.insert(0, str(ROOT / "_src" / "pixiv-auto-download-nas-main"))
 sys.path.insert(0, str(ROOT / "_src" / "XHS-Downloader-NAS-main"))
@@ -26,7 +27,9 @@ from douyin_f2_worker import (
     normalize_cookie_text,
     render_cookie_block,
     render_douyin_job_yaml,
+    verify_douyin_job_output,
 )
+from nas_auto_common.verification import verify_files, verify_recent_files
 from pixiv_auto_worker import classify_error, safe_extract_zip
 from xhs_auto_worker import (
     RingLog as XhsRingLog,
@@ -36,6 +39,7 @@ from xhs_auto_worker import (
     save_settings_cookie,
     sync_downloader_settings,
     xhs_api_response_has_failure,
+    xhs_api_segment_confirms_completion,
     xhs_api_segment_has_failure,
 )
 
@@ -43,12 +47,16 @@ from xhs_auto_worker import (
 class IntegratedPageTests(unittest.TestCase):
     def test_home_page_includes_version_and_service_cards(self) -> None:
         body = integrated_server.page().decode("utf-8")
-        self.assertIn("v1.7.5-dev", body)
+        self.assertIn("v1.7.6-dev", body)
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)
-        self.assertIn("运行总览", body)
-        self.assertIn("下次运行倒计时", body)
+        self.assertIn("系统状态", body)
+        self.assertIn("配置就绪", body)
+        self.assertIn("服务状态", body)
+        self.assertIn("当前任务", body)
+        self.assertIn("最近活动", body)
+        self.assertIn('/assets/icons/xiaohongshu.svg', body)
         self.assertNotIn("上传 cookies.txt", body)
         self.assertNotIn("Cookie 导入", body)
         self.assertNotIn("预览差异", body)
@@ -61,6 +69,54 @@ class IntegratedPageTests(unittest.TestCase):
         text = body.decode("utf-8")
         self.assertNotIn("返回统一主页", text)
         self.assertIn("<main>ok</main>", text)
+
+    def test_proxy_rewrite_prefixes_json_retry_helpers(self) -> None:
+        body = integrated_server.rewrite_html(
+            "/xhs/",
+            b'<script>postJson("/api/retry-note", {}); postJson(\'/api/retry-errors\', {});</script>',
+            "text/html; charset=utf-8",
+        )
+        text = body.decode("utf-8")
+        self.assertIn('postJson("/xhs/api/retry-note"', text)
+        self.assertIn("postJson('/xhs/api/retry-errors'", text)
+
+
+class DownloadVerificationTests(unittest.TestCase):
+    def test_rejects_missing_empty_and_non_media_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            empty = root / "empty.mp4"
+            text_file = root / "response.json"
+            empty.touch()
+            text_file.write_text("{}", encoding="utf-8")
+            result = verify_files([empty, text_file, root / "missing.webp"])
+            self.assertFalse(result.ok)
+            self.assertEqual(result.count, 0)
+            self.assertEqual(len(result.rejected), 3)
+
+    def test_accepts_only_recent_non_empty_media(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            media = root / "verified.webp"
+            media.write_bytes(b"real-media-evidence")
+            result = verify_recent_files(root, since_epoch=media.stat().st_mtime - 0.1)
+            self.assertTrue(result.ok)
+            self.assertEqual(result.count, 1)
+            self.assertEqual(result.total_bytes, len(b"real-media-evidence"))
+
+    def test_douyin_verification_uses_job_mode_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mode_dir = root / "douyin" / "like"
+            mode_dir.mkdir(parents=True)
+            media = mode_dir / "item.mp4"
+            media.write_bytes(b"downloaded-video")
+            result = verify_douyin_job_output(
+                {"download_dir": str(root)}, {"mode": "like"}, media.stat().st_mtime - 0.1
+            )
+            self.assertIsNotNone(result)
+            self.assertTrue(result.ok)
+            self.assertEqual(result.count, 1)
 
     def test_unified_cookie_import_routes_are_not_rendered(self) -> None:
         body = integrated_server.page().decode("utf-8")
@@ -250,6 +306,10 @@ class XhsSettingsTests(unittest.TestCase):
         self.assertTrue(xhs_api_response_has_failure({"message": "unknown", "data": None}))
         self.assertFalse(xhs_api_response_has_failure({"message": "获取小红书作品数据成功", "data": {"作品ID": "abc"}}))
         self.assertFalse(xhs_api_segment_has_failure("作品处理完成：69eddca4000000001f004e2d"))
+
+    def test_xhs_completion_requires_file_or_completion_evidence(self) -> None:
+        self.assertTrue(xhs_api_segment_confirms_completion("文件 item.webp 下载成功"))
+        self.assertFalse(xhs_api_segment_confirms_completion("HTTP 200 without a saved file"))
 
     def test_xhs_retry_button_requeues_by_url(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -32,10 +32,16 @@ if COMMON_PATH.exists():
     sys.path.insert(0, str(COMMON_PATH))
 
 try:
-    from nas_auto_common.ui import app_css
+    from nas_auto_common.ui import app_css, app_script
+    from nas_auto_common.verification import verify_files
 except ModuleNotFoundError:
     def app_css(extra: str = "") -> str:
         return extra
+
+    def app_script(extra: str = "") -> str:
+        return extra
+
+    verify_files = None
 
 
 APP_NAME = "X Auto Downloader"
@@ -1267,6 +1273,11 @@ class Downloader:
                     if media_hint == "unknown" and "No video could be found" in fallback_error:
                         media_hint = "manual_check"
             files = self._valid_media_files(files)
+            if verify_files is not None:
+                verification = verify_files(files, allowed_extensions=IMAGE_EXTENSIONS | VIDEO_EXTENSIONS)
+                files = list(verification.files)
+                if verification.ok:
+                    self.log.write(f"媒体文件已验证：{verification.summary()}")
             file_hint = media_hint_from_files(files)
             if file_hint:
                 media_hint = file_hint
@@ -1641,7 +1652,7 @@ __APP_STYLE__
   </style>
 </head>
 <body>
-  <header><h1>X Auto Downloader</h1><div class="status"><span id="runningPill" class="pill">运行状态：读取中</span><span id="cookiePill" class="pill">Cookie：读取中</span></div></header>
+  <header><div><span class="eyebrow">X / Twitter</span><h1>X 媒体下载</h1><p class="page-summary">采集 Likes、验证媒体文件并管理手动下载</p></div><div class="status" data-live><span id="runningPill" class="pill">运行状态：读取中</span><span id="cookiePill" class="pill">Cookie：读取中</span></div></header>
   <main>
     <section>
       <h2>控制</h2>
@@ -1678,7 +1689,7 @@ __APP_STYLE__
     <section>
       <h2>需要手动处理的视频失败链接</h2>
       <div class="help">这里只列出 yt-dlp 明确返回 “No video could be found in this tweet” 的失败项；你手动下载后可以删除对应记录。</div>
-      <table><thead><tr><th>Tweet</th><th>作者</th><th>次数</th><th>更新时间</th><th>错误</th><th>操作</th></tr></thead><tbody id="manualFailedBody"></tbody></table>
+      <div class="table-scroll"><table><thead><tr><th>Tweet</th><th>作者</th><th>次数</th><th>更新时间</th><th>错误</th><th>操作</th></tr></thead><tbody id="manualFailedBody"></tbody></table></div>
     </section>
     <section>
       <h2>配置</h2>
@@ -1701,7 +1712,7 @@ __APP_STYLE__
           打开 x.com 并保持登录，从浏览器开发者工具复制请求里的 Cookie header，粘贴后保存。程序会写入 <code>/config/x_cookies.txt</code>。
         </div>
         <label>粘贴 Cookie header</label>
-        <textarea name="cookie_text" placeholder="auth_token=...; ct0=..."></textarea>
+        <textarea name="cookie_text" data-sensitive placeholder="auth_token=...; ct0=..."></textarea>
         <div class="actions"><button type="submit">保存 Cookie</button></div>
       </form>
       <div class="help" id="cookieSummary">Cookie 状态读取中...</div>
@@ -1713,17 +1724,18 @@ __APP_STYLE__
     </section>
     <section>
       <h2>最近运行</h2>
-      <table><thead><tr><th>ID</th><th>开始</th><th>状态</th><th>发现</th><th>下载</th><th>跳过</th><th>失败</th></tr></thead><tbody id="runsBody"></tbody></table>
+      <div class="table-scroll"><table><thead><tr><th>ID</th><th>开始</th><th>状态</th><th>发现</th><th>下载</th><th>跳过</th><th>失败</th></tr></thead><tbody id="runsBody"></tbody></table></div>
     </section>
     <section>
       <h2>下载记录</h2>
-      <table><thead><tr><th>Tweet</th><th>作者</th><th>类型</th><th>状态</th><th>文件</th><th>次数</th><th>错误</th></tr></thead><tbody id="tweetsBody"></tbody></table>
+      <div class="table-scroll"><table><thead><tr><th>Tweet</th><th>作者</th><th>类型</th><th>状态</th><th>文件</th><th>次数</th><th>错误</th></tr></thead><tbody id="tweetsBody"></tbody></table></div>
     </section>
     <section>
       <h2>日志</h2>
       <pre id="logBox"></pre>
     </section>
   </main>
+  <script>__APP_SCRIPT__</script>
   <script>
     const $ = (id) => document.getElementById(id);
     const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
@@ -1750,13 +1762,13 @@ __APP_STYLE__
     function updateTables(data) {
       $("runsBody").innerHTML = (data.runs || []).map((r) =>
         `<tr><td>${r.id}</td><td>${esc(r.started_at)}</td><td>${esc(r.status)}</td><td>${r.discovered}</td><td>${r.downloaded}</td><td>${r.skipped}</td><td>${r.failed}</td></tr>`
-      ).join("");
+      ).join("") || `<tr><td colspan="7"><div class="empty-state">暂无运行记录。</div></td></tr>`;
       $("manualFailedBody").innerHTML = (data.manual_failed || []).map((t) =>
-        `<tr><td><a href="${esc(t.url)}" target="_blank">${esc(t.tweet_id)}</a></td><td>${esc(t.author)}</td><td>${esc(t.attempts)}</td><td>${esc(t.updated_at || "")}</td><td>${esc((t.error || "").slice(0, 180))}</td><td><form method="post" action="/manual-failed/delete"><input type="hidden" name="tweet_id" value="${esc(t.tweet_id)}"><button class="secondary" type="submit">删除</button></form></td></tr>`
-      ).join("") || `<tr><td colspan="6" class="muted">暂无需要手动处理的失败链接。</td></tr>`;
+        `<tr><td><a href="${esc(t.url)}" target="_blank" rel="noreferrer">${esc(t.tweet_id)}</a></td><td>${esc(t.author)}</td><td>${esc(t.attempts)}</td><td>${esc(t.updated_at || "")}</td><td>${esc((t.error || "").slice(0, 180))}</td><td><form method="post" action="/manual-failed/delete" data-confirm="确认删除这条失败记录？"><input type="hidden" name="tweet_id" value="${esc(t.tweet_id)}"><button class="secondary" type="submit">删除</button></form></td></tr>`
+      ).join("") || `<tr><td colspan="6"><div class="empty-state">暂无需要手动处理的失败链接。</div></td></tr>`;
       $("tweetsBody").innerHTML = (data.tweets || []).map((t) =>
-        `<tr><td><a href="${esc(t.url)}" target="_blank">${esc(t.tweet_id)}</a></td><td>${esc(t.author)}</td><td>${esc(typeName(t.media_hint))}</td><td>${esc(t.status)}</td><td>${t.files_count || 0}</td><td>${esc(t.attempts)}</td><td>${esc((t.error || "").slice(0, 120))}</td></tr>`
-      ).join("");
+        `<tr><td><a href="${esc(t.url)}" target="_blank" rel="noreferrer">${esc(t.tweet_id)}</a></td><td>${esc(t.author)}</td><td>${esc(typeName(t.media_hint))}</td><td>${esc(t.status)}</td><td>${t.files_count || 0}</td><td>${esc(t.attempts)}</td><td>${esc((t.error || "").slice(0, 120))}</td></tr>`
+      ).join("") || `<tr><td colspan="7"><div class="empty-state">暂无下载记录。</div></td></tr>`;
     }
     function updateCookieSummary(summary) {
       const ok = summary?.valid ? "格式有效" : "格式异常";
@@ -1800,7 +1812,7 @@ __APP_STYLE__
     setInterval(refreshStatus, 2000);
   </script>
 </body>
-</html>""".replace("__APP_NAME__", APP_NAME).replace("__APP_STYLE__", app_css())
+</html>""".replace("__APP_NAME__", APP_NAME).replace("__APP_STYLE__", app_css()).replace("__APP_SCRIPT__", app_script())
 
 
 def redirect(handler: BaseHTTPRequestHandler, location: str = "/") -> None:

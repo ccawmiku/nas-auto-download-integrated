@@ -24,15 +24,19 @@ if COMMON_PATH.exists():
     sys.path.insert(0, str(COMMON_PATH))
 
 try:
-    from nas_auto_common.ui import app_css
+    from nas_auto_common.ui import app_css, app_script
 except ModuleNotFoundError:
     def app_css(extra: str = "") -> str:
+        return extra
+
+    def app_script(extra: str = "") -> str:
         return extra
 
 
 PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
-APP_VERSION = os.environ.get("APP_VERSION", "v1.7.5-dev")
+ASSET_ROOT = Path(__file__).resolve().parent / "assets"
+APP_VERSION = os.environ.get("APP_VERSION", "v1.7.6-dev")
 XHS_QUEUE_FILE = Path(os.environ.get("XHS_QUEUE_FILE", "/queue/xhs/links.txt"))
 MAX_XHS_API_BODY_BYTES = 5_000_000
 DOUYIN_CONFIG_PATH = Path(os.environ.get("DOUYIN_CONFIG_PATH", "/config/douyin/config.json"))
@@ -73,6 +77,12 @@ SERVICES = {
     "x": {"name": "X", "port": 18082, "path": "/x/", "config": "/config/x/config.json"},
     "pixiv": {"name": "Pixiv", "port": 18083, "path": "/pixiv/", "config": "/config/pixiv/config.json"},
     "douyin": {"name": "抖音", "port": 18084, "path": "/douyin/", "config": "/config/douyin/config.json"},
+}
+SERVICE_ICONS = {
+    "xhs": "/assets/icons/xiaohongshu.svg",
+    "x": "/assets/icons/x.svg",
+    "pixiv": "/assets/icons/pixiv.svg",
+    "douyin": "/assets/icons/douyin.svg",
 }
 
 DOUYIN_REFERENCE_COOKIE_ORDER = (
@@ -547,7 +557,7 @@ def query_child_status(svc: dict[str, Any]) -> dict[str, Any]:
         conn.close()
 
 
-def summarize_child_status(child: dict[str, Any]) -> dict[str, Any]:
+def summarize_child_status(service_key: str, child: dict[str, Any]) -> dict[str, Any]:
     progress = child.get("progress") if isinstance(child.get("progress"), dict) else {}
     counts = child.get("counts") if isinstance(child.get("counts"), dict) else {}
     current = str(child.get("current_job") or progress.get("current_url") or "").strip()
@@ -562,11 +572,40 @@ def summarize_child_status(child: dict[str, Any]) -> dict[str, Any]:
         )
     elif child.get("last_run_message"):
         extra = str(child.get("last_run_message") or "")
+    configured = False
+    readiness_note = "需要配置凭证"
+    if service_key == "xhs":
+        cookie = child.get("settings_cookie") if isinstance(child.get("settings_cookie"), dict) else {}
+        configured = bool(cookie.get("present")) and not bool(cookie.get("missing_required"))
+        readiness_note = "Cookie 已验证" if configured else "需要小红书 Cookie"
+    elif service_key == "x":
+        cookie = child.get("cookie_summary") if isinstance(child.get("cookie_summary"), dict) else {}
+        configured = bool(child.get("cookie_present")) and bool(cookie.get("valid"))
+        readiness_note = "Cookie 已验证" if configured else "需要有效的 X Cookie"
+    elif service_key == "pixiv":
+        configured = bool(child.get("token_present"))
+        readiness_note = "Token 已保存" if configured else "需要 Pixiv Token"
+    elif service_key == "douyin":
+        cookie = child.get("cookie_summary") if isinstance(child.get("cookie_summary"), dict) else {}
+        configured = bool(cookie.get("present")) and not bool(cookie.get("missing_critical"))
+        readiness_note = "Cookie 关键字段完整" if configured else "需要有效的抖音 Cookie"
+    failed_count = int(counts.get("failed", 0) or 0)
+    if service_key == "douyin":
+        failed_count = len(
+            [item for item in child.get("last_results") or [] if str(item.get("status")) == "failed"]
+        )
+    logs = child.get("logs") if isinstance(child.get("logs"), list) else []
+    recent_log = str(logs[-1] if logs else child.get("last_run_message") or "").strip()
     return {
         "running": bool(child.get("running")),
         "next_run_at": str(child.get("next_run_at") or ""),
         "current": current,
         "extra": extra,
+        "configured": configured,
+        "readiness_note": readiness_note,
+        "failed_count": failed_count,
+        "attention_count": failed_count + (0 if configured else 1),
+        "recent_log": recent_log[-260:],
     }
 
 
@@ -582,7 +621,8 @@ def service_status() -> dict[str, Any]:
                 "path": svc["path"],
                 "port": svc["port"],
                 "ready": ready,
-                **summarize_child_status(child),
+                "icon": SERVICE_ICONS.get(key, ""),
+                **summarize_child_status(key, child),
             }
         )
     return {
@@ -707,7 +747,7 @@ def post_xhs_worker(path: str, payload: dict[str, Any], timeout: int = 30) -> di
         conn.close()
 
 
-def page(message: str = "") -> bytes:
+def legacy_page(message: str = "") -> bytes:
     status_data = service_status()
     nav_items = ""
     overview_rows = ""
@@ -895,8 +935,112 @@ setInterval(refreshCountdowns, 1000);
   </main>
 </div>
 </div>
+<script>{app_script()}</script>
 <script>{script}</script>
 </body></html>"""
+    return body.encode("utf-8")
+
+
+def page(message: str = "") -> bytes:
+    status_data = service_status()
+    services = list(status_data.get("services") or [])
+    online_count = sum(1 for svc in services if svc.get("ready"))
+    configured_count = sum(1 for svc in services if svc.get("configured"))
+    running_count = sum(1 for svc in services if svc.get("running"))
+    attention_count = sum(int(svc.get("attention_count", 0) or 0) for svc in services)
+
+    nav_items: list[str] = []
+    service_rows: list[str] = []
+    task_rows: list[str] = []
+    activity_rows: list[str] = []
+    for svc in services:
+        key = html.escape(str(svc.get("key") or ""))
+        name = html.escape(str(svc.get("name") or ""))
+        path = html.escape(str(svc.get("path") or ""))
+        icon = html.escape(str(svc.get("icon") or ""))
+        online = bool(svc.get("ready"))
+        configured = bool(svc.get("configured"))
+        running = bool(svc.get("running"))
+        failures = int(svc.get("failed_count", 0) or 0)
+        nav_items.append(
+            f'<a class="nav-item {"ready" if online else "starting"}" href="/?view={key}" '
+            f'data-service="{key}" data-url="{path}"><span class="nav-service"><span class="service-logo {key}">'
+            f'<img src="{icon}" alt=""></span><span>{name}</span></span><em data-status="{key}">'
+            f'{"已在线" if online else "启动中"}</em></a>'
+        )
+        if not online:
+            action = "等待启动"
+        elif not configured:
+            action = "完成配置"
+        elif failures:
+            action = f"查看 {failures} 个失败"
+        elif running:
+            action = "查看任务"
+        else:
+            action = "打开服务"
+        service_rows.append(
+            f'<tr data-overview-row="{key}"><td><div class="service-name"><span class="service-logo {key}">'
+            f'<img src="{icon}" alt=""></span><strong>{name}</strong></div></td>'
+            f'<td><span class="status-text {"ready" if online else "starting"}" data-ready-cell>{"已在线" if online else "未在线"}</span></td>'
+            f'<td><span class="status-text {"ready" if configured else "starting"}" data-config-cell>{"已就绪" if configured else "需要配置"}</span>'
+            f'<small data-readiness-note>{html.escape(str(svc.get("readiness_note") or ""))}</small></td>'
+            f'<td><span data-run-label>{"运行中" if running else ("空闲" if online else "未就绪")}</span>'
+            f'<small data-current-cell>{html.escape(str(svc.get("current") or "无任务运行"))}</small></td>'
+            f'<td class="{"danger-text" if failures else ""}" data-failed-cell>{failures}<small>{"需要处理" if failures else "无失败"}</small></td>'
+            f'<td><button class="secondary row-action" type="button" data-open-service="{key}" data-url="{path}">{action}</button></td></tr>'
+        )
+        if running or svc.get("current"):
+            task_rows.append(
+                f'<tr><td>{name}</td><td>{html.escape(str(svc.get("current") or "正在运行"))}</td>'
+                f'<td><span class="status-text ready">运行中</span></td><td>{html.escape(str(svc.get("extra") or "-"))}</td></tr>'
+            )
+        if svc.get("recent_log"):
+            activity_rows.append(
+                f'<li><span class="activity-dot {"danger" if failures else ""}"></span><div><strong>{name}</strong>'
+                f'<span>{html.escape(str(svc.get("recent_log") or ""))}</span></div></li>'
+            )
+    if not task_rows:
+        task_rows.append('<tr><td colspan="4"><div class="empty-state">当前没有运行中的任务。</div></td></tr>')
+    if not activity_rows:
+        activity_rows.append('<li class="empty-state">暂无活动，任务运行后会在这里显示。</li>')
+
+    shell_css = app_css(
+        """
+body{background:#f6f8f7}.app-shell{min-height:100vh;display:grid;grid-template-columns:244px minmax(0,1fr)}
+.shell-sidebar{height:100vh;position:sticky;top:0;background:#063f43;color:#f4fbfa;padding:22px 14px;display:flex;flex-direction:column;gap:22px;border-right:1px solid rgba(255,255,255,.08)}
+.brand{display:grid;gap:4px;padding:2px 10px 18px;border-bottom:1px solid rgba(255,255,255,.14)}.brand strong{font-size:23px;letter-spacing:-.03em}.brand span{color:#b9d1cf;font-size:12px}
+.nav-group{display:grid;gap:8px}.nav-title{color:#9bbdba;font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;padding:0 12px 4px}
+.nav-item{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;background:transparent;color:#eff8f7;text-decoration:none;text-align:left;font:inherit;border:1px solid transparent;border-radius:10px;padding:9px 10px;cursor:pointer;min-height:48px}
+.nav-service{display:flex;align-items:center;gap:10px;min-width:0}.nav-item:hover,.nav-item.active{background:#0a7775;border-color:#168b87}.nav-item em{font-style:normal;color:#b9d1cf;font-size:11px}.nav-item.ready em{color:#a9ebc8}.nav-item.starting em{color:#ffd58a}
+.sidebar-meta{margin-top:auto;padding:16px 10px 0;border-top:1px solid rgba(255,255,255,.14);display:grid;gap:7px;color:#b9d1cf;font-size:12px}.sidebar-meta strong{color:#fff}
+.service-logo{width:36px;height:36px;display:inline-flex;align-items:center;justify-content:center;border-radius:10px;background:#fff;border:1px solid var(--line);flex:0 0 auto}.service-logo img{width:20px;height:20px;display:block}.service-logo.xhs{background:#ff2442;border-color:#ff2442}.service-logo.xhs img,.service-logo.douyin img{filter:invert(1)}.service-logo.x{background:#050505;border-color:#050505}.service-logo.x img{filter:invert(1)}.service-logo.pixiv{background:#168cff;border-color:#168cff}.service-logo.pixiv img{filter:invert(1)}.service-logo.douyin{background:#111;border-color:#111}.nav-item .service-logo{width:32px;height:32px;border-radius:8px}.nav-item .service-logo img{width:18px;height:18px}
+.workspace{min-width:0}.topbar{background:#fff;color:var(--text);border-bottom:1px solid var(--line);min-height:68px;padding:0 28px}.topbar-actions{display:flex;align-items:center;gap:12px;color:var(--muted)}.icon-button img{width:17px;height:17px}.shell-main{max-width:none;width:100%;padding:28px;align-content:start}
+.dashboard-view{display:grid;gap:22px}.dashboard-view.hidden{display:none}.health-panel{background:#fff;border:1px solid var(--line);border-radius:14px;padding:0;box-shadow:var(--shadow-soft);overflow:hidden}.health-panel h2{padding:20px 22px 0;margin:0}.health-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-top:14px}.health-item{display:grid;grid-template-columns:44px 1fr;gap:12px;align-items:center;padding:18px 22px;border-right:1px solid var(--line)}.health-item:last-child{border-right:0}.health-icon{width:42px;height:42px;border-radius:50%;display:grid;place-items:center;border:2px solid var(--ok);background:var(--ok-bg)}.health-icon img{width:21px;height:21px}.health-item.attention .health-icon{border-color:var(--warn);background:var(--warn-bg)}.health-item span{display:block;color:var(--muted);font-size:12px}.health-item strong{display:block;font-size:17px;margin-bottom:2px}
+.overview-section{padding:0;overflow:hidden}.section-title-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:20px 22px 8px}.section-title-row h2{margin:0}.overview-table{overflow:auto;padding:0 12px 12px}.overview-table th{background:#fff}.service-name{display:flex;align-items:center;gap:10px}.status-text{display:inline-flex;align-items:center;gap:7px;font-weight:700;white-space:nowrap}.status-text::before{content:"";width:8px;height:8px;border-radius:50%;background:#8b9996}.status-text.ready::before{background:var(--ok)}.status-text.starting::before{background:var(--warn)}td small{display:block;margin-top:3px;color:var(--muted);font-size:11px;max-width:260px;overflow-wrap:anywhere}.danger-text{color:var(--danger);font-weight:700}.row-action{min-width:126px}
+.dashboard-grid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(320px,.85fr);gap:18px}.dashboard-grid section{min-height:250px}.activity-list{list-style:none;margin:0;padding:0;display:grid}.activity-list li{display:grid;grid-template-columns:12px 1fr;gap:10px;padding:11px 0;border-bottom:1px solid var(--line)}.activity-list li:last-child{border-bottom:0}.activity-dot{width:8px;height:8px;margin-top:7px;border-radius:50%;background:var(--ok)}.activity-dot.danger{background:var(--danger)}.activity-list strong{display:block;font-size:12px}.activity-list span{display:block;color:var(--muted);font-size:12px;overflow-wrap:anywhere}
+.service-pane{display:none;padding:0;border:0;background:transparent;box-shadow:none;overflow:visible}.service-pane.active{display:block}.service-frame{width:100%;min-height:700px;border:0;background:transparent;display:block}
+@media(max-width:1100px){.health-strip{grid-template-columns:repeat(2,1fr)}.health-item:nth-child(2){border-right:0}.health-item:nth-child(-n+2){border-bottom:1px solid var(--line)}.dashboard-grid{grid-template-columns:1fr}}
+@media(max-width:900px){.app-shell{grid-template-columns:1fr}.shell-sidebar{height:auto;position:static;padding:14px;gap:12px}.brand{padding:0 4px 10px}.nav-group{grid-template-columns:repeat(5,minmax(130px,1fr));overflow-x:auto}.nav-title,.sidebar-meta{display:none}.shell-main{padding:16px}.topbar{padding:12px 16px;align-items:center;flex-direction:row}.nav-item{min-height:44px}.nav-item em{display:none}}
+@media(max-width:640px){.health-strip{grid-template-columns:1fr}.health-item{border-right:0;border-bottom:1px solid var(--line)}.topbar-actions>span{display:none}.shell-main{padding:12px}}
+        """
+    )
+    script = """
+const $=(id)=>document.getElementById(id);const esc=(value)=>String(value??"").replace(/[&<>"']/g,(ch)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+const dashboardView=$("dashboardView"),servicePane=$("servicePane"),serviceFrame=$("serviceFrame");let frameObserver=null;
+function showDashboard(push=true){dashboardView.classList.remove("hidden");servicePane.classList.remove("active");serviceFrame.removeAttribute("src");document.querySelectorAll(".nav-item").forEach((item)=>item.classList.remove("active"));$("dashboardNav").classList.add("active");if(push)history.pushState({view:"dashboard"},"","/")}
+function openService(url,key,push=true){dashboardView.classList.add("hidden");servicePane.classList.add("active");if(serviceFrame.getAttribute("src")!==url)serviceFrame.src=url;document.querySelectorAll(".nav-item").forEach((item)=>item.classList.remove("active"));document.querySelector(`.nav-item[data-service="${key}"]`)?.classList.add("active");if(push)history.pushState({view:key},"",`/?view=${encodeURIComponent(key)}`)}
+document.addEventListener("click",(event)=>{const target=event.target.closest("[data-service],[data-open-service]");if(!target)return;event.preventDefault();const key=target.dataset.service||target.dataset.openService;const url=target.dataset.url||document.querySelector(`.nav-item[data-service="${key}"]`)?.dataset.url;if(key&&url)openService(url,key)});$("dashboardNav").addEventListener("click",()=>showDashboard());
+function resizeServiceFrame(){try{const doc=serviceFrame.contentDocument;if(!doc)return;const resize=()=>serviceFrame.style.height=`${Math.max(700,doc.documentElement.scrollHeight,doc.body?.scrollHeight||0)}px`;resize();frameObserver?.disconnect();frameObserver=new ResizeObserver(resize);if(doc.body)frameObserver.observe(doc.body)}catch(_error){}}serviceFrame.addEventListener("load",resizeServiceFrame);
+async function refreshStatus(){try{const resp=await fetch("/api/status",{cache:"no-store"});const data=await resp.json();$("versionText").textContent=data.version||"";let online=0,configured=0,running=0,attention=0;const tasks=[],activities=[];for(const svc of data.services||[]){if(svc.ready)online++;if(svc.configured)configured++;if(svc.running)running++;attention+=Number(svc.attention_count||0);const nav=document.querySelector(`[data-status="${svc.key}"]`);if(nav)nav.textContent=svc.ready?"已在线":"启动中";const row=document.querySelector(`[data-overview-row="${svc.key}"]`);if(row){const ready=row.querySelector("[data-ready-cell]");if(ready){ready.textContent=svc.ready?"已在线":"未在线";ready.className=`status-text ${svc.ready?"ready":"starting"}`}const config=row.querySelector("[data-config-cell]");if(config){config.textContent=svc.configured?"已就绪":"需要配置";config.className=`status-text ${svc.configured?"ready":"starting"}`}row.querySelector("[data-readiness-note]").textContent=svc.readiness_note||"";row.querySelector("[data-run-label]").textContent=svc.running?"运行中":(svc.ready?"空闲":"未就绪");row.querySelector("[data-current-cell]").textContent=svc.current||"无任务运行";const failed=row.querySelector("[data-failed-cell]");failed.firstChild.textContent=String(svc.failed_count||0);failed.classList.toggle("danger-text",Number(svc.failed_count||0)>0)}if(svc.running||svc.current)tasks.push(svc);if(svc.recent_log)activities.push(svc)}$("onlineMetric").textContent=`${online}/${(data.services||[]).length}`;$("configuredMetric").textContent=`${configured}/${(data.services||[]).length}`;$("runningMetric").textContent=String(running);$("attentionMetric").textContent=String(attention);$("attentionItem").classList.toggle("attention",attention>0);$("globalStatus").textContent=attention?`${attention} 项需要处理`:"全部服务正常";$("taskBody").innerHTML=tasks.length?tasks.map((svc)=>`<tr><td>${esc(svc.name)}</td><td>${esc(svc.current||"正在运行")}</td><td><span class="status-text ready">运行中</span></td><td>${esc(svc.extra||"-")}</td></tr>`).join(""):`<tr><td colspan="4"><div class="empty-state">当前没有运行中的任务。</div></td></tr>`;$("activityList").innerHTML=activities.length?activities.map((svc)=>`<li><span class="activity-dot ${Number(svc.failed_count||0)?"danger":""}"></span><div><strong>${esc(svc.name)}</strong><span>${esc(svc.recent_log)}</span></div></li>`).join(""):`<li class="empty-state">暂无活动，任务运行后会在这里显示。</li>`}catch(_error){$("globalStatus").textContent="状态更新失败"}}
+$("refreshButton").addEventListener("click",refreshStatus);refreshStatus();setInterval(refreshStatus,3000);setInterval(()=>{$("clockText").textContent=new Date().toLocaleString("zh-CN",{hour12:false})},1000);window.addEventListener("popstate",()=>{const view=new URLSearchParams(location.search).get("view"),item=view&&document.querySelector(`.nav-item[data-service="${view}"]`);if(item)openService(item.dataset.url,view,false);else showDashboard(false)});const initialView=new URLSearchParams(location.search).get("view"),initialItem=initialView&&document.querySelector(`.nav-item[data-service="${initialView}"]`);if(initialItem)openService(initialItem.dataset.url,initialView,false);
+"""
+    body = f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NAS Auto Download</title><style>{shell_css}</style></head><body>
+<div class="app-shell"><aside class="shell-sidebar"><div class="brand"><strong>NAS Auto</strong><span id="versionText">{html.escape(APP_VERSION)}</span></div><nav class="nav-group"><div class="nav-title">工作区</div><button class="nav-item active" id="dashboardNav" type="button"><span class="nav-service"><span class="service-logo"><img src="/assets/icons/home.svg" alt=""></span><span>总览</span></span><em>当前</em></button>{''.join(nav_items)}</nav><div class="sidebar-meta"><span><strong>NAS-01</strong> · 在线</span><span id="clockText">系统时间读取中</span><span>时区 Asia/Shanghai</span></div></aside>
+<div class="workspace"><header class="topbar"><h1>总览</h1><div class="topbar-actions"><button class="secondary icon-button" id="refreshButton" type="button"><img src="/assets/icons/refresh.svg" alt="">手动刷新</button><span id="globalStatus" data-live>{"全部服务正常" if attention_count == 0 else f"{attention_count} 项需要处理"}</span></div></header><main class="shell-main">
+<div class="dashboard-view" id="dashboardView">{f'<section class="ok">{html.escape(message)}</section>' if message else ''}<section class="health-panel"><h2>系统状态</h2><div class="health-strip"><div class="health-item"><span class="health-icon"><img src="/assets/icons/server.svg" alt=""></span><div><strong>服务在线</strong><span id="onlineMetric">{online_count}/{len(services)}</span></div></div><div class="health-item"><span class="health-icon"><img src="/assets/icons/clipboard-check.svg" alt=""></span><div><strong>配置就绪</strong><span id="configuredMetric">{configured_count}/{len(services)}</span></div></div><div class="health-item"><span class="health-icon"><img src="/assets/icons/activity.svg" alt=""></span><div><strong>当前运行</strong><span id="runningMetric">{running_count}</span></div></div><div class="health-item {"attention" if attention_count else ""}" id="attentionItem"><span class="health-icon"><img src="/assets/icons/alert-triangle.svg" alt=""></span><div><strong>需要处理</strong><span id="attentionMetric">{attention_count}</span></div></div></div></section>
+<section class="overview-section"><div class="section-title-row"><div><h2>服务状态</h2><p class="page-summary">在线不等于可运行；凭证完整性和失败项会单独显示。</p></div></div><div class="overview-table"><table><thead><tr><th>服务</th><th>服务在线</th><th>配置状态</th><th>当前任务</th><th>队列失败</th><th>下一步操作</th></tr></thead><tbody id="overviewBody">{''.join(service_rows)}</tbody></table></div></section>
+<div class="dashboard-grid"><section><div class="section-title-row"><h2>当前任务</h2></div><div class="table-scroll"><table><thead><tr><th>服务</th><th>任务</th><th>状态</th><th>补充</th></tr></thead><tbody id="taskBody">{''.join(task_rows)}</tbody></table></div></section><section><div class="section-title-row"><h2>最近活动</h2></div><ul class="activity-list" id="activityList">{''.join(activity_rows)}</ul></section></div></div>
+<section class="service-pane" id="servicePane"><iframe class="service-frame" id="serviceFrame" name="serviceFrame" title="服务页面"></iframe></section></main></div></div><script>{app_script()}</script><script>{script}</script></body></html>"""
     return body.encode("utf-8")
 
 
@@ -910,6 +1054,8 @@ def rewrite_html(prefix: str, body: bytes, content_type: str) -> bytes:
         'src="/': f'src="{prefix}',
         'fetch("/': f'fetch("{prefix}',
         "fetch('/": f"fetch('{prefix}",
+        'postJson("/': f'postJson("{prefix}',
+        "postJson('/": f"postJson('{prefix}",
     }
     for src, dst in replacements.items():
         text = text.replace(src, dst)
@@ -957,6 +1103,23 @@ def proxy(handler: BaseHTTPRequestHandler, service_key: str, prefix: str) -> Non
 
 
 class Handler(BaseHTTPRequestHandler):
+    def send_asset(self, request_path: str) -> bool:
+        relative = request_path.removeprefix("/assets/").replace("\\", "/")
+        if not relative or ".." in Path(relative).parts:
+            return False
+        path = ASSET_ROOT / relative
+        if not path.is_file():
+            return False
+        data = path.read_bytes()
+        content_type = "image/svg+xml" if path.suffix.lower() == ".svg" else "application/octet-stream"
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+        return True
+
     def send_json_payload(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -977,6 +1140,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         split = urlsplit(self.path)
+        if split.path.startswith("/assets/") and self.send_asset(split.path):
+            return
         if split.path == "/api/status":
             self.send_json_payload(service_status())
             return

@@ -1,6 +1,6 @@
 FROM mcr.microsoft.com/playwright/python:v1.56.0-noble
 
-ARG APP_VERSION=v1.7.5-dev
+ARG APP_VERSION=v1.7.6-dev
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -23,6 +23,7 @@ COPY _src/pixiv-auto-download-nas-main /opt/nas-auto/pixiv
 COPY _src/douyin-f2-auto-main /opt/nas-auto/douyin
 COPY _common/nas_auto_common /opt/nas-auto/nas_auto_common
 COPY _integrated/integrated_server.py /opt/nas-auto/integrated_server.py
+COPY _integrated/assets /opt/nas-auto/assets
 
 EXPOSE 14001
 

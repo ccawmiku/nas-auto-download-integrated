@@ -35,10 +35,16 @@ if COMMON_PATH.exists():
     sys.path.insert(0, str(COMMON_PATH))
 
 try:
-    from nas_auto_common.ui import app_css
+    from nas_auto_common.ui import app_css, app_script
+    from nas_auto_common.verification import verify_files
 except ModuleNotFoundError:
     def app_css(extra: str = "") -> str:
         return extra
+
+    def app_script(extra: str = "") -> str:
+        return extra
+
+    verify_files = None
 from pixiv_gallerydl_oauth import finish_flow as finish_pixiv_oauth
 from pixiv_gallerydl_oauth import extract_code as extract_code_like
 from pixiv_gallerydl_oauth import start_flow as start_pixiv_oauth
@@ -1060,6 +1066,14 @@ class PixivDownloader:
                 files = self.download_ugoira(item)
             else:
                 files = self.download_images(item)
+            if verify_files is not None:
+                verification = verify_files(files, allowed_extensions=IMAGE_EXTENSIONS)
+                if not verification.ok:
+                    raise RuntimeError("下载流程结束，但没有找到非空的 Pixiv 媒体文件")
+                files = list(verification.files)
+                self.log.write(f"媒体文件已验证：{verification.summary()}")
+            elif not files:
+                raise RuntimeError("下载流程结束，但没有返回 Pixiv 媒体文件")
             self.store.mark_result(item.artwork_id, "done", files, "")
             return "done", files, ""
         except Exception as error:
@@ -1356,7 +1370,7 @@ __APP_STYLE__
   </style>
 </head>
 <body>
-  <header><h1>Pixiv Auto Downloader</h1><div class="status"><span id="runningPill" class="pill">运行状态：读取中</span><span id="tokenPill" class="pill">Token：读取中</span></div></header>
+  <header><div><span class="eyebrow">Pixiv</span><h1>Pixiv 收藏下载</h1><p class="page-summary">管理收藏同步、OAuth 凭证与经过文件验证的下载记录</p></div><div class="status" data-live><span id="runningPill" class="pill">运行状态：读取中</span><span id="tokenPill" class="pill">Token：读取中</span></div></header>
   <main>
     <section>
       <h2>控制</h2>
@@ -1401,42 +1415,39 @@ __APP_STYLE__
     </section>
     <section>
       <h2>Refresh Token</h2>
-      <div class="help">
-        获取方式：电脑执行 <code>gallery-dl oauth:pixiv</code>，复制命令行给出的登录链接，用浏览器打开；按 F12 打开开发者工具并切到 Network；登录 Pixiv；找到最后一个 <code>callback?state=...</code> 请求，复制 URL 里的 <code>code</code> 参数；回到命令行粘贴 code。成功后命令行会显示 <code>Your 'refresh-token' is</code>，把下一行粘贴到这里。code 大约 30 秒过期。
-      </div>
+      <div class="help">推荐流程：生成登录链接 → 登录 Pixiv → 粘贴 callback URL/code → 换取并测试 Token。code 有效期很短，失败时请重新生成。</div>
       <form method="post" action="/oauth-start">
         <div class="actions"><button type="submit">生成 Pixiv 登录链接</button></div>
       </form>
       <div class="help" id="oauthHelp"></div>
       <div class="help" id="oauthMessage"></div>
-      <div class="help">
-        详细步骤：1. 点击生成登录链接；2. 在新标签页打开链接并登录 Pixiv；3. 按 F12 打开开发者工具并切到 Network；4. 找到最后一个包含 callback 的请求；5. 复制整个 callback URL，或只复制 URL 里的 code 参数；6. 回到这里粘贴并保存。code 过期很快，如果失败请重新生成链接。
-      </div>
+      <details><summary>查看 callback 获取步骤</summary><div class="help">打开登录链接并完成登录，在开发者工具 Network 中找到最后一个包含 callback 的请求，复制完整 URL 或其中的 code 参数。也可以在电脑执行 <code>gallery-dl oauth:pixiv</code>，按命令行提示完成授权。</div></details>
       <form method="post" action="/oauth-finish">
         <label>粘贴 callback URL 或 code</label>
-        <textarea name="callback_or_code" placeholder="https://app-api.pixiv.net/web/v1/users/auth/pixiv/callback?...&code=..."></textarea>
+        <textarea name="callback_or_code" data-sensitive placeholder="https://app-api.pixiv.net/web/v1/users/auth/pixiv/callback?...&code=..."></textarea>
         <div class="actions"><button type="submit">换取并保存 Token</button></div>
       </form>
       <form method="post" action="/token">
         <label>粘贴 refresh-token</label>
-        <textarea name="refresh_token"></textarea>
+        <textarea name="refresh_token" data-sensitive></textarea>
         <div class="actions"><button type="submit">保存 Token</button></div>
       </form>
       <form method="post" action="/token-test"><div class="actions"><button class="secondary" type="submit">测试 Token</button></div></form>
     </section>
     <section>
       <h2>最近运行</h2>
-      <table><thead><tr><th>ID</th><th>开始</th><th>状态</th><th>发现</th><th>下载</th><th>跳过</th><th>失败</th></tr></thead><tbody id="runsBody"></tbody></table>
+      <div class="table-scroll"><table><thead><tr><th>ID</th><th>开始</th><th>状态</th><th>发现</th><th>下载</th><th>跳过</th><th>失败</th></tr></thead><tbody id="runsBody"></tbody></table></div>
     </section>
     <section>
       <h2>下载记录</h2>
-      <table><thead><tr><th>作品</th><th>标题</th><th>类型</th><th>R-18</th><th>状态</th><th>文件</th><th>错误</th></tr></thead><tbody id="artworksBody"></tbody></table>
+      <div class="table-scroll"><table><thead><tr><th>作品</th><th>标题</th><th>类型</th><th>R-18</th><th>状态</th><th>文件</th><th>错误</th></tr></thead><tbody id="artworksBody"></tbody></table></div>
     </section>
     <section>
       <h2>日志</h2>
       <pre id="logBox"></pre>
     </section>
   </main>
+  <script>__APP_SCRIPT__</script>
   <script>
     const $ = (id) => document.getElementById(id);
     const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
@@ -1459,10 +1470,10 @@ __APP_STYLE__
     function updateTables(data) {
       $("runsBody").innerHTML = (data.runs || []).map((r) =>
         `<tr><td>${r.id}</td><td>${esc(r.started_at)}</td><td>${esc(r.status)}</td><td>${r.discovered}</td><td>${r.downloaded}</td><td>${r.skipped}</td><td>${r.failed}</td></tr>`
-      ).join("");
+      ).join("") || `<tr><td colspan="7"><div class="empty-state">暂无运行记录。</div></td></tr>`;
       $("artworksBody").innerHTML = (data.artworks || []).map((a) =>
-        `<tr><td><a href="https://www.pixiv.net/artworks/${esc(a.artwork_id)}" target="_blank">${esc(a.artwork_id)}</a></td><td>${esc(a.title)}</td><td>${esc(a.type)}</td><td>${a.is_r18 ? "是" : "否"}</td><td>${esc(a.status)}</td><td>${a.files_count || 0}</td><td>${esc((a.error || "").slice(0, 120))}</td></tr>`
-      ).join("");
+        `<tr><td><a href="https://www.pixiv.net/artworks/${esc(a.artwork_id)}" target="_blank" rel="noreferrer">${esc(a.artwork_id)}</a></td><td>${esc(a.title)}</td><td>${esc(a.type)}</td><td>${a.is_r18 ? "是" : "否"}</td><td>${esc(a.status)}</td><td>${a.files_count || 0}</td><td>${esc((a.error || "").slice(0, 120))}</td></tr>`
+      ).join("") || `<tr><td colspan="7"><div class="empty-state">暂无下载记录。</div></td></tr>`;
     }
     function fillFormOnce(data) {
       if (filledForm) return;
@@ -1500,7 +1511,7 @@ __APP_STYLE__
     setInterval(refreshStatus, 2000);
   </script>
 </body>
-</html>""".replace("__APP_STYLE__", app_css("textarea{min-height:92px}"))
+</html>""".replace("__APP_STYLE__", app_css("textarea{min-height:92px}")).replace("__APP_SCRIPT__", app_script())
 
 
 def redirect(handler: BaseHTTPRequestHandler, location: str = "/") -> None:

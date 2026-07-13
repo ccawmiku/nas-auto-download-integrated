@@ -29,10 +29,19 @@ if COMMON_PATH.exists():
     sys.path.insert(0, str(COMMON_PATH))
 
 try:
-    from nas_auto_common.ui import app_css
+    from nas_auto_common.ui import app_css, app_script
+    from nas_auto_common.verification import DEFAULT_MEDIA_EXTENSIONS, verify_recent_files
 except ModuleNotFoundError:
     def app_css(extra: str = "") -> str:
         return extra
+
+    def app_script(extra: str = "") -> str:
+        return extra
+
+    DEFAULT_MEDIA_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".webp", ".gif", ".mp4"})
+
+    def verify_recent_files(*_args: Any, **_kwargs: Any):
+        return type("FileVerification", (), {"ok": False, "count": 0, "total_bytes": 0, "summary": lambda self: "未找到文件"})()
 
 
 APP_NAME = "XHS Queue Downloader"
@@ -48,6 +57,10 @@ XHS_API_SUCCESS_MARKERS = (
     "文件已存在，跳过下载",
     "存在下载记录，跳过处理",
     "下载功能已关闭，跳过下载",
+)
+XHS_API_COMPLETION_EVIDENCE_MARKERS = (
+    "文件已存在，跳过下载",
+    "存在下载记录，跳过处理",
 )
 XHS_API_FATAL_FAILURE_MARKERS = (
     "获取小红书作品数据失败",
@@ -208,6 +221,13 @@ def settings_path_from_config(config: dict[str, Any]) -> Path:
     return Path(str(config.get("settings_path") or sync.get("path") or "/xhs-volume/settings.json"))
 
 
+def download_root_from_config(config: dict[str, Any]) -> Path:
+    settings = read_json(settings_path_from_config(config))
+    sync = config.get("sync_settings") or {}
+    defaults = sync.get("defaults") or {}
+    return Path(str(settings.get("work_path") or defaults.get("work_path") or "/xhs"))
+
+
 def sync_downloader_settings(config: dict[str, Any]) -> dict[str, Any]:
     path = settings_path_from_config(config)
     existing = read_json(path)
@@ -303,6 +323,13 @@ def xhs_api_segment_has_failure(text: str) -> bool:
 
 def xhs_api_segment_has_success(text: str) -> bool:
     return any(marker in str(text or "") for marker in XHS_API_SUCCESS_MARKERS)
+
+
+def xhs_api_segment_confirms_completion(text: str) -> bool:
+    segment = str(text or "")
+    return bool(XHS_API_DOWNLOAD_SUCCESS_RE.search(segment)) or any(
+        marker in segment for marker in XHS_API_COMPLETION_EVIDENCE_MARKERS
+    )
 
 
 def xhs_api_response_has_failure(payload: dict[str, Any] | None) -> bool:
@@ -697,6 +724,7 @@ class App:
                 self.set_progress({"current_url": url, "done": index - 1})
                 self.log.write(f"提交小红书下载 [{index}/{len(pending)}] {note_id}: {url}")
                 api_log_offset = file_size(xhs_api_log_path)
+                download_started_at = time.time()
                 try:
                     ok, detail = post_download(api_url, url, skip=skip, timeout=timeout)
                 except Exception as error:
@@ -705,10 +733,22 @@ class App:
                 if ok and xhs_api_segment_has_failure(api_log_segment):
                     ok = False
                     detail = (api_log_segment.strip() or detail)[-2000:]
+                verification = verify_recent_files(
+                    download_root_from_config(self.config),
+                    since_epoch=download_started_at,
+                    allowed_extensions=DEFAULT_MEDIA_EXTENSIONS,
+                )
+                completion_evidence = "\n".join([detail, api_log_segment])
+                if ok and not (
+                    xhs_api_segment_confirms_completion(completion_evidence) or verification.ok
+                ):
+                    ok = False
+                    detail = "接口返回成功，但没有找到下载完成日志或非空媒体文件，未标记为完成"
                 if ok:
                     stats["downloaded"] += 1
                     self.store.mark_downloaded(note_id)
-                    self.log.write(f"下载提交成功：{note_id}")
+                    evidence = verification.summary() if verification.ok else "API 日志已确认文件完成或已存在"
+                    self.log.write(f"下载已验证：{note_id}；{evidence}")
                 elif is_transient_xhs_failure(detail):
                     stats["retry"] += 1
                     retry_after = time.time() + retry_delay
@@ -834,8 +874,8 @@ pre{max-height:680px}
 </head>
 <body>
   <header>
-    <h1>小红书队列下载</h1>
-    <div class="status"><span id="runningPill" class="pill">读取中</span><span id="cookiePill" class="pill">Cookie 读取中</span></div>
+    <div><span class="eyebrow">Xiaohongshu</span><h1>小红书队列下载</h1><p class="page-summary">管理浏览器脚本提交的作品、失败重试与下载凭证</p></div>
+    <div class="status" data-live><span id="runningPill" class="pill">读取中</span><span id="cookiePill" class="pill">Cookie 读取中</span></div>
   </header>
   <main>
     <section>
@@ -843,7 +883,7 @@ pre{max-height:680px}
       <div class="actions">
         <form method="post" action="/run"><button type="submit">立即处理队列</button></form>
         <form method="post" action="/reload"><button class="secondary" type="submit">重新读取配置</button></form>
-        <form method="post" action="/clear-queue"><button class="danger" type="submit">清空所有队列</button></form>
+        <form method="post" action="/clear-queue" data-confirm="这会清除所有待处理、待重试和失败项目，确认继续？"><button class="danger" type="submit">清空所有队列</button></form>
       </div>
       <div class="progress-grid">
         <div class="metric"><span class="label">待处理</span><strong id="pendingMetric">0</strong></div>
@@ -872,7 +912,7 @@ pre{max-height:680px}
       <form method="post" action="/settings-cookie">
         <div class="help">这里写入的是 JoeanAmier/XHS-Downloader 2.7 使用的 <code>settings.json</code> 里的 <code>cookie</code> 字段，不再使用旧的自动采集 Cookie。</div>
         <label>Cookie Header</label>
-        <textarea name="cookie_text" placeholder="a1=...; web_session=..."></textarea>
+        <textarea name="cookie_text" data-sensitive placeholder="a1=...; web_session=..."></textarea>
         <div class="actions"><button type="submit">保存到 settings.json</button></div>
       </form>
       <div class="help" id="cookieSummary"></div>
@@ -891,6 +931,7 @@ pre{max-height:680px}
       <section><h2>队列 worker 日志</h2><pre id="logBox"></pre></section>
     </div>
   </main>
+  <script>{app_script()}</script>
   <script>
     const $ = (id) => document.getElementById(id);
     const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[ch]));
@@ -911,13 +952,13 @@ pre{max-height:680px}
     function renderNotes(notes) {{
       $("notesBody").innerHTML = (notes || []).map((n) => `
         <tr class="status-${{esc(n.status)}}">
-          <td><span class="status-dot"></span><a href="${{esc(n.url)}}" target="_blank">${{esc(n.note_id)}}</a></td>
+          <td><span class="status-dot"></span><a href="${{esc(n.url)}}" target="_blank" rel="noreferrer">${{esc(n.note_id)}}</a></td>
           <td>${{esc(statusLabel(n.status))}}</td>
           <td>${{esc(n.attempts)}}</td>
           <td>${{esc(n.source || "")}}</td>
           <td>${{esc(n.updated_at || "")}}</td>
           <td>${{esc((n.last_error || "").slice(0, 240))}}</td>
-        </tr>`).join("");
+        </tr>`).join("") || `<tr><td colspan="6"><div class="empty-state">暂无链接记录，浏览器脚本提交后会显示在这里。</div></td></tr>`;
     }}
     async function postJson(url, payload) {{
       const resp = await fetch(url, {{
@@ -929,20 +970,20 @@ pre{max-height:680px}
       return resp.json();
     }}
     async function retryNote(noteId, url) {{
-      await postJson("/api/retry-note", {{note_id: noteId, url}});
+      await postJson("api/retry-note", {{note_id: noteId, url}});
       await refreshStatus();
     }}
     function renderErrors(notes) {{
       $("errorsBody").innerHTML = (notes || []).map((n) => `
         <tr class="status-${{esc(n.status)}}">
-          <td><span class="status-dot"></span><a href="${{esc(n.url)}}" target="_blank">${{esc(n.note_id)}}</a></td>
+          <td><span class="status-dot"></span><a href="${{esc(n.url)}}" target="_blank" rel="noreferrer">${{esc(n.note_id)}}</a></td>
           <td>${{esc(statusLabel(n.status))}}</td>
           <td>${{esc(n.attempts)}}</td>
           <td>${{esc(retryTime(n.retry_after))}}</td>
           <td>${{esc(n.updated_at || "")}}</td>
           <td>${{esc((n.last_error || "").slice(0, 360))}}</td>
           <td><button class="secondary retry-note" type="button" data-note-id="${{esc(n.note_id)}}" data-url="${{esc(n.url)}}">重试</button></td>
-        </tr>`).join("");
+        </tr>`).join("") || `<tr><td colspan="7"><div class="empty-state">当前没有需要处理的错误。</div></td></tr>`;
     }}
     function renderCookie(summary) {{
       const missing = (summary?.missing_required || []).join(", ") || "无";
@@ -982,7 +1023,7 @@ pre{max-height:680px}
       if (target.id === "retryAllErrors") {{
         target.setAttribute("disabled", "disabled");
         try {{
-          await postJson("/api/retry-errors", {{}});
+          await postJson("api/retry-errors", {{}});
           await refreshStatus();
         }} catch (error) {{
           alert(`批量重试失败：${{error}}`);

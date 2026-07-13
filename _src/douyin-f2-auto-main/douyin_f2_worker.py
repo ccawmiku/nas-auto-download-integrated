@@ -30,10 +30,16 @@ if COMMON_PATH.exists():
     sys.path.insert(0, str(COMMON_PATH))
 
 try:
-    from nas_auto_common.ui import app_css
+    from nas_auto_common.ui import app_css, app_script
+    from nas_auto_common.verification import verify_recent_files
 except ModuleNotFoundError:
     def app_css(extra: str = "") -> str:
         return extra
+
+    def app_script(extra: str = "") -> str:
+        return extra
+
+    verify_recent_files = None
 
 try:
     import f2
@@ -234,6 +240,22 @@ COOKIE_YAML_PLACEHOLDER = "__DOUYIN_COOKIE_PLACEHOLDER__"
 DOUYIN_CONTENT_ID_RE = re.compile(r"\[(\d{10,})\]")
 DOUYIN_SKIP_RE = re.compile(r"\[\s*跳过\s*\]|跳过")
 DOUYIN_DONE_RE = re.compile(r"\[\s*完成\s*\]|完成")
+DOUYIN_MEDIA_EXTENSIONS = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+    ".gif",
+    ".mp4",
+    ".mkv",
+    ".webm",
+    ".mov",
+    ".mp3",
+    ".m4a",
+    ".aac",
+    ".wav",
+    ".flac",
+}
 
 
 @dataclass
@@ -244,6 +266,9 @@ class RunResult:
     started_at: str
     finished_at: str
     message: str
+    verified_files: int = 0
+    verified_bytes: int = 0
+    verification: str = ""
 
 
 class RingLog:
@@ -588,6 +613,8 @@ class F2SkipStopGuard:
         self.consecutive_skipped = 0
         self.triggered = False
         self.trigger_id = ""
+        self.completed_items = 0
+        self.skipped_items = 0
 
     def observe(self, line: str) -> bool:
         if self.threshold <= 0 or self.triggered:
@@ -614,14 +641,31 @@ class F2SkipStopGuard:
             return
         if self.current_skipped > 0 and self.current_done == 0:
             self.consecutive_skipped += 1
+            self.skipped_items += 1
         elif self.current_done > 0:
             self.consecutive_skipped = 0
+            self.completed_items += 1
         if self.threshold > 0 and self.consecutive_skipped >= self.threshold:
             self.triggered = True
             self.trigger_id = self.current_id
         self.current_id = ""
         self.current_skipped = 0
         self.current_done = 0
+
+
+def verify_douyin_job_output(config: dict[str, Any], job: dict[str, Any], since_epoch: float):
+    if verify_recent_files is None:
+        return None
+    download_dir = Path(str(config.get("download_dir") or "/F2DL"))
+    mode = str(job.get("mode") or "").strip()
+    mode_root = download_dir / "douyin" / mode if mode else download_dir
+    root = mode_root if mode_root.exists() else download_dir
+    return verify_recent_files(
+        root,
+        since_epoch=since_epoch,
+        allowed_extensions=DOUYIN_MEDIA_EXTENSIONS,
+        max_files=1000,
+    )
 
 
 class App:
@@ -798,6 +842,7 @@ class App:
     def run_job(self, job: dict[str, Any], index: int) -> RunResult:
         key = job_key(job, index)
         started_at = now_iso()
+        started_epoch = time.time()
         self.current_job = key
         if not str(job.get("url") or "").strip():
             message = "URL 为空，已跳过"
@@ -864,23 +909,44 @@ class App:
         thread.join(timeout=2)
         if not stopped_by_guard and guard.finish():
             stopped_by_guard = True
-        if stopped_by_guard:
-            status = "done"
-            message = f"连续 {guard.consecutive_skipped} 个作品均为跳过，已停止本项目"
-        elif stopped_by_timeout:
-            status = "done"
-            message = f"达到最大运行时长 {max_runtime} 秒，已停止本项目"
-        elif self.stop_run_event.is_set() and returncode not in {0, None}:
+        verification = verify_douyin_job_output(self.config, job, started_epoch)
+        verified_files = int(getattr(verification, "count", 0) or 0)
+        verified_bytes = int(getattr(verification, "total_bytes", 0) or 0)
+        verification_text = verification.summary() if verification is not None and verification.ok else "未发现本次新增的非空媒体文件"
+        if self.stop_run_event.is_set() and returncode not in {0, None}:
             status = "stopped"
             message = "已手动停止"
-        elif returncode == 0:
+        elif verification is not None and verification.ok:
             status = "done"
-            message = "ok"
+            message = verification_text
+        elif stopped_by_guard and guard.skipped_items > 0 and guard.completed_items == 0:
+            status = "skipped"
+            message = f"连续 {guard.consecutive_skipped} 个作品均已存在，未产生新文件"
+        elif stopped_by_timeout:
+            status = "failed"
+            message = f"达到最大运行时长 {max_runtime} 秒，且未确认新增媒体文件"
+        elif returncode == 0:
+            if guard.skipped_items > 0 and guard.completed_items == 0:
+                status = "skipped"
+                message = f"{guard.skipped_items} 个作品已存在，未产生新文件"
+            else:
+                status = "failed"
+                message = "f2 正常退出，但未确认新增媒体文件"
         else:
             status = "failed"
             message = f"f2 exited with {returncode}"
         self.log.write(f"{key}: {message}")
-        return RunResult(key, status, returncode, started_at, now_iso(), message)
+        return RunResult(
+            key,
+            status,
+            returncode,
+            started_at,
+            now_iso(),
+            message,
+            verified_files,
+            verified_bytes,
+            verification_text,
+        )
 
     def run_once(self, only_job: str = "") -> list[RunResult]:
         if not self.run_lock.acquire(blocking=False):
@@ -1010,12 +1076,12 @@ def html_page(app: App) -> str:
 <style>
 {page_style}
 </style></head><body>
-<header><h1>Douyin F2 Downloader</h1><div><span class="pill" id="runState">运行：{"运行中" if data["running"] else "空闲"}</span> <span class="pill" id="cookieState">Cookie：{html.escape(str(cookie_info["status"]))}</span></div></header>
+<header><div><span class="eyebrow">Douyin / f2</span><h1>抖音任务下载</h1><p class="page-summary">管理点赞、收藏任务以及经过落盘验证的运行结果</p></div><div class="status" data-live><span class="pill" id="runState">运行：{"运行中" if data["running"] else "空闲"}</span> <span class="pill" id="cookieState">Cookie：{html.escape(str(cookie_info["status"]))}</span></div></header>
 <main>
-{f'<section class="ok" id="noticeBox">{html.escape(str(data["notice"]))}</section>' if data["notice"] else '<section class="ok" id="noticeBox" style="display:none"></section>'}
+{f'<section class="ok" id="noticeBox" data-live>{html.escape(str(data["notice"]))}</section>' if data["notice"] else '<section class="ok" id="noticeBox" data-live style="display:none"></section>'}
 <section><h2>控制</h2><div class="muted">下一次自动运行：<span id="nextRunAt">{html.escape(data["next_run_at"] or "未排程")}</span>；当前任务：<span id="currentJob">{html.escape(data["current_job"] or "-")}</span></div>
 <div class="actions"><form method="post" action="/run"><button type="submit">立即运行全部</button></form><form method="post" action="/stop"><button class="secondary" type="submit">手动停止</button></form><form method="post" action="/reload"><button class="secondary" type="submit">重新读取配置</button></form><form method="post" action="/check-version"><button class="secondary" type="submit">检查 f2 版本</button></form></div></section>
-<section><h2>抖音 Cookie</h2><div class="grid">
+<section><h2>抖音 Cookie</h2><div class="grid stats-grid">
 <div>状态<br><strong id="cookieStatus">{html.escape(str(cookie_info["status"]))}</strong></div>
 <div>字段数<br><strong id="cookieFields">{html.escape(str(cookie_info["fields"]))}</strong></div>
 <div>长度<br><strong id="cookieLength">{html.escape(str(cookie_info["length"]))}</strong></div>
@@ -1027,10 +1093,10 @@ def html_page(app: App) -> str:
 <p class="muted" id="cookieMissingRef">缺失参考字段：{html.escape(", ".join(cookie_info["missing_reference"][:16]) + (" ..." if len(cookie_info["missing_reference"]) > 16 else "") if cookie_info["missing_reference"] else "无")}</p>
 <p class="muted">支持直接粘贴 `app.yaml` 里的 `cookie:` 段或单行 Cookie header。保存时会按本地参考 `app.yaml` 的字段和顺序拼接，其他字段会丢弃，并过滤非 ASCII 值；生成给 f2 的 YAML 会继续按参考 `app.yaml` 的分号换行和缩进输出。页面和日志都不会显示明文。</p>
 <form method="post" action="/cookie">
-<textarea name="cookie_text" placeholder="cookie: sessionid=...; ttwid=..."></textarea>
+<textarea name="cookie_text" data-sensitive placeholder="cookie: sessionid=...; ttwid=..."></textarea>
 <div class="actions"><button type="submit">保存抖音 Cookie</button></div>
 </form></section>
-<section><h2>f2 版本</h2><div class="grid">
+<section><h2>f2 版本</h2><div class="grid stats-grid">
 <div>当前版本<br><strong>{html.escape(str(data["f2_version"]["installed"]))}</strong></div>
 <div>最新版本<br><strong>{html.escape(str(data["f2_version"]["latest"] or "-"))}</strong></div>
 <div>检查时间<br><strong>{html.escape(str(data["f2_version"]["checked_at"] or "-"))}</strong></div>
@@ -1044,14 +1110,16 @@ def html_page(app: App) -> str:
 <label>f2 数据目录<input name="f2_state_dir" value="{html.escape(str(cfg.get("f2_state_dir") or ""))}"></label></div>
 {jobs_html}
 <div class="actions"><button type="submit">保存配置</button></div></form></section>
-<section><h2>数据库</h2><div class="grid">
+<section><h2>数据库</h2><div class="grid stats-grid">
 <div>douyin_users.db<br><strong>{data["db"]["douyin_users.db"]["rows"] if data["db"]["douyin_users.db"]["rows"] is not None else "-"}</strong><br><span class="muted">点赞/收藏记录</span></div>
 <div>douyin_videos.db<br><strong>{data["db"]["douyin_videos.db"]["rows"] if data["db"]["douyin_videos.db"]["rows"] is not None else "-"}</strong><br><span class="muted">没有也可运行</span></div>
 </div></section>
-<section><h2>最近结果</h2><pre id="resultsBox">{html.escape(json.dumps(data["last_results"], ensure_ascii=False, indent=2))}</pre></section>
+<section><h2>最近结果</h2><div class="table-scroll"><table><thead><tr><th>任务</th><th>状态</th><th>验证文件</th><th>验证大小</th><th>完成时间</th><th>说明</th></tr></thead><tbody id="resultsBody"></tbody></table></div></section>
 <section><h2>日志</h2><pre id="logBox">{html.escape(chr(10).join(data["logs"][-120:]))}</pre></section>
 </main>
+<script>{app_script()}</script>
 <script>
+const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[ch]));
 const refreshStatus = async () => {{
   try {{
     const resp = await fetch("/api/status", {{ cache: "no-store" }});
@@ -1069,7 +1137,8 @@ const refreshStatus = async () => {{
     document.getElementById("cookieReference").textContent = `${{cookie.reference_present || 0}}/${{cookie.reference_total || 0}}`;
     document.getElementById("cookieRisk").textContent = cookie.risk || "未导入";
     document.getElementById("cookieMissingRef").textContent = "缺失参考字段：" + ((cookie.missing_reference || []).length ? (cookie.missing_reference.length > 16 ? cookie.missing_reference.slice(0, 16).join(", ") + " ..." : cookie.missing_reference.join(", ")) : "无");
-    document.getElementById("resultsBox").textContent = JSON.stringify(data.last_results || [], null, 2);
+    const resultsBody = document.getElementById("resultsBody");
+    resultsBody.innerHTML = (data.last_results || []).map((item) => `<tr><td>${{esc(item.job)}}</td><td>${{esc(item.status)}}</td><td>${{Number(item.verified_files || 0)}}</td><td>${{Number(item.verified_bytes || 0).toLocaleString()}} B</td><td>${{esc(item.finished_at)}}</td><td>${{esc(item.message)}}</td></tr>`).join("") || `<tr><td colspan="6"><div class="empty-state">暂无运行结果。</div></td></tr>`;
     document.getElementById("logBox").textContent = (data.logs || []).slice(-120).join("\\n");
     const noticeBox = document.getElementById("noticeBox");
     if (data.notice) {{
@@ -1079,6 +1148,7 @@ const refreshStatus = async () => {{
   }} catch (_error) {{
   }}
 }};
+refreshStatus();
 setInterval(refreshStatus, 5000);
 </script>
 </body></html>"""
