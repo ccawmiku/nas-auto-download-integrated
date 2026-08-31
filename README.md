@@ -25,7 +25,7 @@ docker compose up -d
 默认镜像：
 
 ```text
-ghcr.io/ccawmiku/nas-auto-download-integrated:v1.7.5-dev
+ghcr.io/ccawmiku/nas-auto-download-integrated:v1.8-dev
 ```
 
 每次发布都会同步更新 `docker-compose.yml` 里的镜像版本。NAS 端更新时执行 `docker compose pull && docker compose up -d`，避免复用旧镜像 tag。
@@ -115,7 +115,7 @@ ghcr.io/ccawmiku/nas-auto-download-integrated:v1.7.5-dev
 
 ## 抖音 f2 迁移
 
-抖音集成使用 `f2==0.0.1.7`，默认跑点赞和收藏两个任务。f2 自己的数据库继续沿用：
+抖音集成使用自定义修复版 `f2`（Fork 自 Johnserf-Seed/f2 并修复 403 Forbidden 校验），默认跑点赞和收藏两个任务。f2 自己的数据库继续沿用：
 
 ```text
 /volume2/docker/nas-auto-download-integrated/douyin/f2/database/douyin_users.db

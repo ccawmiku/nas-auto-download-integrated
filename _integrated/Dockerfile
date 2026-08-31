@@ -1,6 +1,6 @@
 FROM mcr.microsoft.com/playwright/python:v1.56.0-noble
 
-ARG APP_VERSION=v1.7.5-dev
+ARG APP_VERSION=v1.8-dev
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -11,7 +11,7 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /opt/nas-auto
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+    && apt-get install -y --no-install-recommends git ffmpeg ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 COPY _integrated/requirements.txt /tmp/integrated-requirements.txt
