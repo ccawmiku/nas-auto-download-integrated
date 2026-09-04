@@ -1,6 +1,6 @@
 FROM mcr.microsoft.com/playwright/python:v1.56.0-noble
 
-ARG APP_VERSION=v1.8-dev
+ARG APP_VERSION=v1.8.1-dev
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -11,7 +11,7 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /opt/nas-auto
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ffmpeg ca-certificates \
+    && apt-get install -y --no-install-recommends git ffmpeg ca-certificates tini \
     && rm -rf /var/lib/apt/lists/*
 
 COPY _integrated/requirements.txt /tmp/integrated-requirements.txt
@@ -26,4 +26,5 @@ COPY _integrated/integrated_server.py /opt/nas-auto/integrated_server.py
 
 EXPOSE 14001
 
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["python", "/opt/nas-auto/integrated_server.py"]

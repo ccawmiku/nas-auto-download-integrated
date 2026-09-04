@@ -647,6 +647,12 @@ class App:
         self.f2_version_checked_at = ""
         self.f2_version_message = "尚未检查"
         self._job_config_signature = ""
+        self._last_config_mtime = 0.0
+        try:
+            if self.config_path.exists():
+                self._last_config_mtime = self.config_path.stat().st_mtime
+        except OSError:
+            pass
         self.ensure_dirs()
         self.start_version_check_thread()
 
@@ -657,10 +663,16 @@ class App:
         state_dir = Path(str(self.config.get("f2_state_dir") or "/state/douyin/f2"))
         runtime_conf = state_dir / "conf" / "conf.yaml"
         runtime_conf.parent.mkdir(parents=True, exist_ok=True)
-        runtime_conf.write_text(
-            yaml.safe_dump(load_f2_runtime_conf(), allow_unicode=True, sort_keys=False, width=100000),
-            encoding="utf-8",
-        )
+        new_conf_text = yaml.safe_dump(load_f2_runtime_conf(), allow_unicode=True, sort_keys=False, width=100000)
+        should_write = True
+        if runtime_conf.exists():
+            try:
+                if runtime_conf.read_text(encoding="utf-8", errors="ignore") == new_conf_text:
+                    should_write = False
+            except OSError:
+                pass
+        if should_write:
+            runtime_conf.write_text(new_conf_text, encoding="utf-8")
         if sync_configs:
             self.sync_job_configs()
 
@@ -685,7 +697,14 @@ class App:
             config_path.write_text(render_douyin_job_yaml(build_douyin_job_payload(self.config, job)), encoding="utf-8")
         self._job_config_signature = signature
 
-    def reload_config(self) -> None:
+    def reload_config(self, force: bool = False) -> None:
+        try:
+            mtime = self.config_path.stat().st_mtime if self.config_path.exists() else 0.0
+        except OSError:
+            mtime = 0.0
+        if not force and mtime == self._last_config_mtime:
+            return
+        self._last_config_mtime = mtime
         self.config = load_config(self.config_path)
         self.log.max_lines = int(self.config.get("web", {}).get("log_lines", 5000))
         self.ensure_dirs()
@@ -956,7 +975,7 @@ class App:
                 else:
                     self.log.write("未找到抖音 Cookie，自动运行暂缓")
                     self.next_run_at = time.time() + 60
-            self.stop_event.wait(5)
+            self.stop_event.wait(10)
 
     def status(self) -> dict[str, Any]:
         return {

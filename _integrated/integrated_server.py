@@ -32,7 +32,7 @@ except ModuleNotFoundError:
 
 PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
-APP_VERSION = os.environ.get("APP_VERSION", "v1.8-dev")
+APP_VERSION = os.environ.get("APP_VERSION", "v1.8.1-dev")
 XHS_QUEUE_FILE = Path(os.environ.get("XHS_QUEUE_FILE", "/queue/xhs/links.txt"))
 MAX_XHS_API_BODY_BYTES = 5_000_000
 DOUYIN_CONFIG_PATH = Path(os.environ.get("DOUYIN_CONFIG_PATH", "/config/douyin/config.json"))
@@ -1048,6 +1048,23 @@ class Handler(BaseHTTPRequestHandler):
         return
 
 
+def reap_zombies() -> None:
+    if hasattr(os, "waitpid"):
+        while True:
+            try:
+                pid, _ = os.waitpid(-1, os.WNOHANG)
+                if pid <= 0:
+                    break
+            except (ChildProcessError, OSError):
+                break
+
+
+def zombie_reaper_loop() -> None:
+    while True:
+        reap_zombies()
+        time.sleep(5)
+
+
 def shutdown(_signum: int, _frame: Any) -> None:
     for _name, proc in processes:
         if proc.poll() is None:
@@ -1056,13 +1073,20 @@ def shutdown(_signum: int, _frame: Any) -> None:
     for _name, proc in processes:
         if proc.poll() is None:
             proc.kill()
+    reap_zombies()
     raise SystemExit(0)
 
 
 def main() -> int:
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
+    if hasattr(signal, "SIGCHLD"):
+        try:
+            signal.signal(signal.SIGCHLD, lambda _s, _f: reap_zombies())
+        except Exception:
+            pass
     ensure_configs()
+    threading.Thread(target=zombie_reaper_loop, daemon=True).start()
     threading.Thread(target=start_children, daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     log(f"统一 Web UI listening on 0.0.0.0:{PORT}")
