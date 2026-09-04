@@ -50,7 +50,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "cookie_file": "/config/douyin/douyin_cookie.txt",
     "f2_state_dir": "/state/douyin/f2",
     "f2_config_dir": "/config/douyin/f2",
-    "download_dir": "/F2DL",
+    "download_dir": "/douyin",
     "defaults": {
         "cover": False,
         "desc": False,
@@ -471,7 +471,7 @@ def build_douyin_job_payload(config: dict[str, Any], job: dict[str, Any]) -> dic
         "music": defaults.get("music"),
         "naming": str(defaults.get("naming") or "{create}-{nickname}-{aweme_id}"),
         "page_counts": int(defaults.get("page_counts") or 20),
-        "path": str(config.get("download_dir") or "/F2DL"),
+        "path": str(config.get("download_dir") or "/douyin"),
         "timeout": int(defaults.get("timeout") or 10),
         "url": str(job.get("url") or ""),
     }

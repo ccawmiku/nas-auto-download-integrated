@@ -32,13 +32,13 @@ except ModuleNotFoundError:
 
 PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
-APP_VERSION = os.environ.get("APP_VERSION", "v1.8.1-dev")
+APP_VERSION = os.environ.get("APP_VERSION", "v1.8.2-dev")
 XHS_QUEUE_FILE = Path(os.environ.get("XHS_QUEUE_FILE", "/queue/xhs/links.txt"))
 MAX_XHS_API_BODY_BYTES = 5_000_000
 DOUYIN_CONFIG_PATH = Path(os.environ.get("DOUYIN_CONFIG_PATH", "/config/douyin/config.json"))
 DOUYIN_COOKIE_YAML_PLACEHOLDER = "__DOUYIN_COOKIE_PLACEHOLDER__"
 DEFAULT_DOUYIN_CONFIG: dict[str, Any] = {
-    "download_dir": "/F2DL",
+    "download_dir": "/douyin",
     "f2_config_dir": "/config/douyin/f2",
     "defaults": {
         "cover": False,
@@ -285,7 +285,7 @@ def ensure_configs() -> None:
             "cookie_file": "/config/douyin/douyin_cookie.txt",
             "f2_state_dir": "/state/douyin/f2",
             "f2_config_dir": "/config/douyin/f2",
-            "download_dir": "/F2DL",
+            "download_dir": "/douyin",
             "web": {"host": "127.0.0.1", "port": 18084},
         },
     )
@@ -299,7 +299,7 @@ def ensure_configs() -> None:
         Path("/downloads/x/videos"),
         Path("/downloads/x/downloads-metadata"),
         Path("/downloads/pixiv"),
-        Path("/F2DL"),
+        Path("/douyin"),
     ]:
         path.mkdir(parents=True, exist_ok=True)
 
@@ -515,7 +515,7 @@ def build_douyin_job_payload(config: dict[str, Any], job: dict[str, Any], cookie
         "music": defaults.get("music"),
         "naming": str(defaults.get("naming") or "{create}-{nickname}-{aweme_id}"),
         "page_counts": int(defaults.get("page_counts") or 20),
-        "path": str(config.get("download_dir") or "/F2DL"),
+        "path": str(config.get("download_dir") or "/douyin"),
         "timeout": int(defaults.get("timeout") or 10),
         "url": str(job.get("url") or ""),
     }

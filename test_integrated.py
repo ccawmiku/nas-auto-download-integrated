@@ -43,7 +43,7 @@ from xhs_auto_worker import (
 class IntegratedPageTests(unittest.TestCase):
     def test_home_page_includes_version_and_service_cards(self) -> None:
         body = integrated_server.page().decode("utf-8")
-        self.assertIn("v1.8-dev", body)
+        self.assertIn(integrated_server.APP_VERSION, body)
         self.assertIn("小红书", body)
         self.assertIn("Pixiv", body)
         self.assertIn("抖音", body)
@@ -140,7 +140,7 @@ class DouyinCookieTests(unittest.TestCase):
                 "music": None,
                 "naming": "{create}-{nickname}-{aweme_id}",
                 "page_counts": 20,
-                "path": "/F2DL",
+                "path": "/douyin",
                 "timeout": 10,
                 "url": "https://www.douyin.com/user/example?showTab=like",
             }

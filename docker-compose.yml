@@ -15,8 +15,9 @@ services:
     restart: unless-stopped
 
   nas-auto-download:
-    image: ghcr.io/ccawmiku/nas-auto-download-integrated:v1.8-dev
+    image: ghcr.io/ccawmiku/nas-auto-download-integrated:v1.8.2-dev
     container_name: nas-auto-download
+    init: true
     depends_on:
       - xhs-api
     ports:
@@ -31,11 +32,11 @@ services:
       - /volume2/docker/nas-auto-download-integrated/x/state:/state/x
       - /volume2/docker/nas-auto-download-integrated/x/downloads-metadata:/downloads/x/downloads-metadata
       - /volume2/se-p/x-p:/downloads/x/images
-      - /volume1/se-v/x-v:/downloads/x/videos
+      - /volume2/se-v/x-v:/downloads/x/videos
       - /volume2/docker/nas-auto-download-integrated/pixiv/config:/config/pixiv
       - /volume2/docker/nas-auto-download-integrated/pixiv/state:/state/pixiv
       - /volume2/se-p/pixiv:/downloads/pixiv
       - /volume2/docker/nas-auto-download-integrated/douyin/config:/config/douyin
       - /volume2/docker/nas-auto-download-integrated/douyin/f2/database:/state/douyin/f2
-      - /volume2/qinlong-debian/F2DL:/F2DL
+      - /volume1/douyin:/douyin
     restart: unless-stopped
