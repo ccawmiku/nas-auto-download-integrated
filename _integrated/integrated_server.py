@@ -24,7 +24,7 @@ from nas_auto.adapters import ServiceAdapterRegistry
 
 PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
-APP_VERSION = os.environ.get("APP_VERSION", "v2.0.1")
+APP_VERSION = os.environ.get("APP_VERSION", "v2.0.2")
 _frontend_candidates = (
     Path(__file__).resolve().parent / "frontend" / "dist",
     Path(__file__).resolve().parents[1] / "frontend" / "dist",

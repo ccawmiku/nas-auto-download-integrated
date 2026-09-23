@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "_integrated"))
 sys.path.insert(0, str(ROOT / "_src" / "douyin-f2-auto-main"))
 sys.path.insert(0, str(ROOT / "_src" / "pixiv-auto-download-nas-main"))
 sys.path.insert(0, str(ROOT / "_src" / "XHS-Downloader-NAS-main"))
+sys.path.insert(0, str(ROOT / "_src" / "x-auto-download-nas-main"))
 
 import integrated_server
 from douyin_f2_worker import (
@@ -39,6 +40,7 @@ from xhs_auto_worker import (
     xhs_api_response_has_failure,
     xhs_api_segment_has_failure,
 )
+from x_auto_worker import browser_scroll_limit
 
 
 class IntegratedPageTests(unittest.TestCase):
@@ -74,6 +76,11 @@ class IntegratedPageTests(unittest.TestCase):
             self.assertIn("running", service)
             self.assertIn("current", service)
             self.assertIn("next_run_at", service)
+
+    def test_x_browser_session_is_bounded_for_legacy_unlimited_config(self) -> None:
+        self.assertEqual(browser_scroll_limit({"max_scrolls": 0}), 20)
+        self.assertEqual(browser_scroll_limit({"max_scrolls": 12}), 12)
+        self.assertEqual(browser_scroll_limit({"max_scrolls": 100, "safety_max_scrolls": 30}), 30)
 
     def test_proxy_rewrite_does_not_inject_back_bar(self) -> None:
         body = integrated_server.rewrite_html("/x/", b"<html><body><main>ok</main></body></html>", "text/html")

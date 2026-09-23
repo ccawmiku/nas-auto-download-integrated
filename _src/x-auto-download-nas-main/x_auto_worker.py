@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 import traceback
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -80,6 +81,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "pause_min_seconds": 10,
         "pause_max_seconds": 30,
         "max_scrolls": 0,
+        "safety_max_scrolls": 20,
         "max_idle_scrolls": 30,
         "target_timeout_ms": 45000,
         "screenshot_enabled": False,
@@ -139,6 +141,13 @@ def interval_hours(config: dict[str, Any]) -> float:
         return max(0.01, float(config.get("run_interval_seconds", 43200)) / 3600)
     except (TypeError, ValueError):
         return 12.0
+
+
+def browser_scroll_limit(browser_config: dict[str, Any]) -> int:
+    """Bound one Chromium session even for existing max_scrolls=0 configs."""
+    configured = max(0, int(browser_config.get("max_scrolls", 0) or 0))
+    safety = max(1, int(browser_config.get("safety_max_scrolls", 20) or 20))
+    return min(configured, safety) if configured else safety
 
 
 def media_hint_from_item(item: dict[str, Any]) -> str:
@@ -771,19 +780,64 @@ class BrowserCollector:
         browser_cfg = self.config["browser"]
         launch_kwargs: dict[str, Any] = {
             "headless": bool(browser_cfg.get("headless", True)),
-            "args": ["--disable-blink-features=AutomationControlled", "--lang=zh-CN"],
+            "args": [
+                "--disable-blink-features=AutomationControlled",
+                "--lang=zh-CN",
+                "--disable-dev-shm-usage",
+                "--disable-background-networking",
+                "--disable-extensions",
+                "--disable-gpu",
+                "--renderer-process-limit=2",
+                "--disk-cache-size=1",
+                "--media-cache-size=1",
+                "--js-flags=--max-old-space-size=256",
+            ],
         }
         if exe := self._browser_executable():
             launch_kwargs["executable_path"] = exe
         browser = await playwright.chromium.launch(**launch_kwargs)
-        context = await browser.new_context(
-            locale="zh-CN",
-            timezone_id="Asia/Shanghai",
-            viewport={"width": 1366, "height": 900},
-            user_agent=self.config.get("default_user_agent"),
-        )
-        await context.add_cookies(cookies)
-        return browser, context
+        try:
+            context = await browser.new_context(
+                locale="zh-CN",
+                timezone_id="Asia/Shanghai",
+                viewport={"width": 1366, "height": 900},
+                user_agent=self.config.get("default_user_agent"),
+            )
+            try:
+                await context.add_cookies(cookies)
+                # Tweet media URLs remain in DOM attributes even when the
+                # browser does not download the files. Actual downloads are
+                # handled separately by the worker.
+                async def reduce_browser_resources(route: Any) -> None:
+                    resource_type = route.request.resource_type
+                    block_images = not bool(browser_cfg.get("screenshot_enabled", False))
+                    if resource_type in {"media", "font"} or (block_images and resource_type == "image"):
+                        await route.abort()
+                    else:
+                        await route.continue_()
+
+                await context.route("**/*", reduce_browser_resources)
+            except BaseException:
+                await context.close()
+                raise
+            return browser, context
+        except BaseException:
+            await browser.close()
+            raise
+
+    @asynccontextmanager
+    async def _browser_page(self, cookies: list[dict[str, Any]]):
+        async with async_playwright() as playwright:
+            browser, context = await self._open_browser_context(playwright, cookies)
+            try:
+                page = await context.new_page()
+                await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+                yield page
+            finally:
+                try:
+                    await context.close()
+                finally:
+                    await browser.close()
 
     async def _resolve_screen_name(self, page: Any, user_id: str) -> str:
         timeout = int(self.config["browser"].get("target_timeout_ms", 45000))
@@ -862,23 +916,16 @@ class BrowserCollector:
         cookies, _user_id = self._load_cookies()
         browser_cfg = self.config["browser"]
         timeout = int(browser_cfg.get("target_timeout_ms", 45000))
-        async with async_playwright() as p:
-            browser, context = await self._open_browser_context(p, cookies)
-            page = await context.new_page()
-            await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
-            try:
-                self.log.write(f"打开单条推文页面：{fallback['url']}")
-                await page.goto(fallback["url"], wait_until="domcontentloaded", timeout=timeout)
-                await page.wait_for_timeout(random.randint(2500, 4200))
-                rows = await self._collect_visible(page)
-                for row in rows:
-                    if row["tweet_id"] == tweet_id:
-                        return row
-                self.log.write("单条页面没有解析到媒体卡片，将回退到 yt-dlp 直接测试")
-                return {**fallback, "has_video": True}
-            finally:
-                await context.close()
-                await browser.close()
+        async with self._browser_page(cookies) as page:
+            self.log.write(f"打开单条推文页面：{fallback['url']}")
+            await page.goto(fallback["url"], wait_until="domcontentloaded", timeout=timeout)
+            await page.wait_for_timeout(random.randint(2500, 4200))
+            rows = await self._collect_visible(page)
+            for row in rows:
+                if row["tweet_id"] == tweet_id:
+                    return row
+            self.log.write("单条页面没有解析到媒体卡片，将回退到 yt-dlp 直接测试")
+            return {**fallback, "has_video": True}
 
     async def collect(self) -> BrowserResult:
         cookies, user_id = self._load_cookies()
@@ -891,7 +938,7 @@ class BrowserCollector:
         out_dir.mkdir(parents=True, exist_ok=True)
         browser_cfg = self.config["browser"]
         timeout = int(browser_cfg.get("target_timeout_ms", 45000))
-        max_scrolls = int(browser_cfg.get("max_scrolls", 0) or 0)
+        effective_max_scrolls = browser_scroll_limit(browser_cfg)
         max_idle = int(browser_cfg.get("max_idle_scrolls", 30) or 30)
         min_delay = int(browser_cfg.get("scroll_delay_min_ms", 1500))
         max_delay = int(browser_cfg.get("scroll_delay_max_ms", 4000))
@@ -906,105 +953,98 @@ class BrowserCollector:
         consecutive_done = 0
         known_stop_found = False
 
-        async with async_playwright() as p:
-            browser, context = await self._open_browser_context(p, cookies)
-            page = await context.new_page()
-            await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
-            try:
-                likes_url = str(browser_cfg.get("likes_url") or "").strip()
-                if likes_url:
-                    screen_name = urlparse(likes_url).path.strip("/").split("/")[0]
-                elif str(browser_cfg.get("screen_name") or "").strip():
-                    screen_name = str(browser_cfg.get("screen_name") or "").strip().lstrip("@")
-                    likes_url = f"https://x.com/{screen_name}/likes"
-                else:
-                    if not user_id:
-                        raise RuntimeError("twid cookie not found; set browser.screen_name or browser.likes_url manually")
-                    screen_name = await self._resolve_screen_name(page, user_id)
-                    likes_url = f"https://x.com/{screen_name}/likes"
+        async with self._browser_page(cookies) as page:
+            likes_url = str(browser_cfg.get("likes_url") or "").strip()
+            if likes_url:
+                screen_name = urlparse(likes_url).path.strip("/").split("/")[0]
+            elif str(browser_cfg.get("screen_name") or "").strip():
+                screen_name = str(browser_cfg.get("screen_name") or "").strip().lstrip("@")
+                likes_url = f"https://x.com/{screen_name}/likes"
+            else:
+                if not user_id:
+                    raise RuntimeError("twid cookie not found; set browser.screen_name or browser.likes_url manually")
+                screen_name = await self._resolve_screen_name(page, user_id)
+                likes_url = f"https://x.com/{screen_name}/likes"
 
-                self.log.write(f"Opening X likes page: {likes_url}")
-                await page.goto(likes_url, wait_until="domcontentloaded", timeout=timeout)
-                await page.wait_for_timeout(random.randint(3500, 5500))
+            self.log.write(f"Opening X likes page: {likes_url}")
+            await page.goto(likes_url, wait_until="domcontentloaded", timeout=timeout)
+            await page.wait_for_timeout(random.randint(3500, 5500))
 
-                idle = 0
-                scroll = 0
-                while True:
-                    rows = await self._collect_visible(page)
-                    before = len(seen)
-                    for row in rows:
-                        tweet_id = row["tweet_id"]
-                        if tweet_id not in seen:
-                            ordered_ids.append(tweet_id)
-                            seen[tweet_id] = row
+            idle = 0
+            scroll = 0
+            while True:
+                rows = await self._collect_visible(page)
+                before = len(seen)
+                for row in rows:
+                    tweet_id = row["tweet_id"]
+                    if tweet_id not in seen:
+                        ordered_ids.append(tweet_id)
+                        seen[tweet_id] = row
+                    else:
+                        current = seen[tweet_id]
+                        current["media_ids"] = sorted(set(current.get("media_ids", []) + row.get("media_ids", [])))
+                        current["has_video"] = current.get("has_video") or row.get("has_video")
+                        if len(row.get("text", "")) > len(current.get("text", "")):
+                            current["text"] = row.get("text", "")
+                    if stop_id and tweet_id == stop_id:
+                        stop_found = True
+                    if tweet_id not in seen or seen[tweet_id] is row:
+                        if self.store and self.store.is_done(tweet_id):
+                            consecutive_done += 1
                         else:
-                            current = seen[tweet_id]
-                            current["media_ids"] = sorted(set(current.get("media_ids", []) + row.get("media_ids", [])))
-                            current["has_video"] = current.get("has_video") or row.get("has_video")
-                            if len(row.get("text", "")) > len(current.get("text", "")):
-                                current["text"] = row.get("text", "")
-                        if stop_id and tweet_id == stop_id:
-                            stop_found = True
-                        if tweet_id not in seen or seen[tweet_id] is row:
-                            if self.store and self.store.is_done(tweet_id):
-                                consecutive_done += 1
-                            else:
-                                consecutive_done = 0
-                            if known_stop > 0 and consecutive_done >= known_stop:
-                                known_stop_found = True
+                            consecutive_done = 0
+                        if known_stop > 0 and consecutive_done >= known_stop:
+                            known_stop_found = True
 
-                    new_count = len(seen) - before
-                    if scroll % 5 == 0 or new_count:
-                        self.log.write(
-                            f"Likes scroll {scroll}: total={len(seen)}, new={new_count}, consecutive_done={consecutive_done}"
-                        )
-                    if self.progress:
-                        self.progress(
-                            {
-                                "phase": "collecting",
-                                "collected": len(seen),
-                                "scroll": scroll,
-                                "new_on_last_scroll": new_count,
-                            }
-                        )
-                    if stop_found:
-                        self.log.write(f"Stop marker found: {stop_id}")
-                        break
-                    if known_stop_found:
-                        self.log.write(f"连续 {consecutive_done} 条已下载，停止继续向后翻")
-                        break
-                    if max_scrolls > 0 and scroll >= max_scrolls:
-                        self.log.write(f"Reached max_scrolls={max_scrolls}")
-                        break
-                    idle = idle + 1 if new_count == 0 else 0
-                    if idle >= max_idle:
-                        self.log.write(f"No new tweets for {idle} scrolls; stopping collection")
-                        break
+                new_count = len(seen) - before
+                if scroll % 5 == 0 or new_count:
+                    self.log.write(
+                        f"Likes scroll {scroll}: total={len(seen)}, new={new_count}, consecutive_done={consecutive_done}"
+                    )
+                if self.progress:
+                    self.progress(
+                        {
+                            "phase": "collecting",
+                            "collected": len(seen),
+                            "scroll": scroll,
+                            "new_on_last_scroll": new_count,
+                        }
+                    )
+                if stop_found:
+                    self.log.write(f"Stop marker found: {stop_id}")
+                    break
+                if known_stop_found:
+                    self.log.write(f"连续 {consecutive_done} 条已下载，停止继续向后翻")
+                    break
+                if scroll >= effective_max_scrolls:
+                    self.log.write(f"Reached browser session scroll limit={effective_max_scrolls}; closing browser to limit NAS memory use")
+                    break
+                idle = idle + 1 if new_count == 0 else 0
+                if idle >= max_idle:
+                    self.log.write(f"No new tweets for {idle} scrolls; stopping collection")
+                    break
 
-                    scroll += 1
-                    await page.mouse.wheel(0, random.randint(min_pixels, max_pixels))
-                    await page.wait_for_timeout(random.randint(min_delay, max_delay))
-                    if pause_every and scroll % pause_every == 0:
-                        low = int(browser_cfg.get("pause_min_seconds", 10))
-                        high = int(browser_cfg.get("pause_max_seconds", 30))
-                        pause = random.randint(low, high)
-                        self.log.write(f"Human-like pause: {pause}s")
-                        await page.wait_for_timeout(pause * 1000)
+                scroll += 1
+                await page.mouse.wheel(0, random.randint(min_pixels, max_pixels))
+                await page.wait_for_timeout(random.randint(min_delay, max_delay))
+                if pause_every and scroll % pause_every == 0:
+                    low = int(browser_cfg.get("pause_min_seconds", 10))
+                    high = int(browser_cfg.get("pause_max_seconds", 30))
+                    pause = random.randint(low, high)
+                    self.log.write(f"Human-like pause: {pause}s")
+                    await page.wait_for_timeout(pause * 1000)
 
-                screenshot = ""
-                if bool(browser_cfg.get("screenshot_enabled", False)):
-                    screenshot = str(out_dir / "last_likes_page.png")
-                    try:
-                        await page.screenshot(
-                            path=screenshot,
-                            full_page=bool(browser_cfg.get("screenshot_full_page", False)),
-                            timeout=int(browser_cfg.get("screenshot_timeout_ms", 10000)),
-                        )
-                    except Exception as error:
-                        self.log.write(f"截图失败，已跳过，不影响下载：{error}")
-            finally:
-                await context.close()
-                await browser.close()
+            screenshot = ""
+            if bool(browser_cfg.get("screenshot_enabled", False)):
+                screenshot = str(out_dir / "last_likes_page.png")
+                try:
+                    await page.screenshot(
+                        path=screenshot,
+                        full_page=bool(browser_cfg.get("screenshot_full_page", False)),
+                        timeout=int(browser_cfg.get("screenshot_timeout_ms", 10000)),
+                    )
+                except Exception as error:
+                    self.log.write(f"截图失败，已跳过，不影响下载：{error}")
 
         tweets = [seen[tweet_id] for tweet_id in ordered_ids]
         if stop_found and stop_id:
@@ -1688,7 +1728,7 @@ __APP_STYLE__
           <div><label>Likes 页面 URL（留空优先使用 X 用户名）</label><input id="likesUrlInput" name="likes_url"></div>
           <div><label>停止标记 URL</label><input id="stopUrlInput" name="stop_url"></div>
           <div><label>运行间隔（小时）</label><input id="intervalHoursInput" name="interval_hours" type="number" min="0.1" step="0.1"></div>
-          <div><label>最大滚动次数（0 表示直到标记或页面无新增）</label><input id="maxScrollsInput" name="max_scrolls" type="number" min="0" step="1"></div>
+          <div><label>最大滚动次数（0 使用安全上限，默认 20 次）</label><input id="maxScrollsInput" name="max_scrolls" type="number" min="0" step="1"></div>
           <div><label>连续已下载停止数</label><input id="knownStopInput" name="known_stop_consecutive" type="number" min="0" step="1"></div>
         </div>
         <div class="actions"><button type="submit">保存配置</button></div>
