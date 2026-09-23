@@ -73,7 +73,7 @@ export function ServicePanel({ service }: { service: Service }) {
     setData(null);
     setTab("records");
     refresh();
-    const timer = window.setInterval(refresh, 5000);
+    const timer = window.setInterval(refresh, 10000);
     return () => window.clearInterval(timer);
   }, [refresh]);
 

@@ -788,7 +788,9 @@ class App:
             "config": self.config,
             "counts": self.store.counts(),
             "runs": self.store.recent_runs(),
-            "notes": self.store.recent_notes(1000),
+            # The status endpoint is polled by the unified console. Keep the
+            # response light; the store still retains the full history.
+            "notes": self.store.recent_notes(100),
             "error_notes": self.store.error_notes(),
             "logs": self.log.lines()[-log_limit:],
             "xhs_api_logs": tail_file(api_log_path, min(log_limit, 3000)),

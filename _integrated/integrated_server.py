@@ -24,7 +24,7 @@ from nas_auto.adapters import ServiceAdapterRegistry
 
 PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
-APP_VERSION = os.environ.get("APP_VERSION", "v2.0.0")
+APP_VERSION = os.environ.get("APP_VERSION", "v2.0.1")
 _frontend_candidates = (
     Path(__file__).resolve().parent / "frontend" / "dist",
     Path(__file__).resolve().parents[1] / "frontend" / "dist",
@@ -552,8 +552,10 @@ def service_status() -> dict[str, Any]:
     services: list[dict[str, Any]] = []
     for key, svc in SERVICES.items():
         adapter = SERVICE_ADAPTERS[key]
-        ready = adapter.ready()
-        child = adapter.status() if ready else {}
+        # One status request per worker. The previous readiness probe followed
+        # by a status request doubled JSON/SQLite work every dashboard poll.
+        child = adapter.status()
+        ready = bool(child)
         services.append(
             {
                 "key": key,
