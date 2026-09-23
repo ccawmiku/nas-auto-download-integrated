@@ -3,17 +3,17 @@ from __future__ import annotations
 COMMON_APP_CSS = """
 :root {
   color-scheme: light;
-  --bg:#f3f5f7;
+  --bg:#f6f8fb;
   --panel:#fff;
   --panel-soft:#f8fafb;
-  --line:#d7dde4;
-  --line-strong:#b8c2cc;
-  --text:#20242c;
-  --muted:#657181;
-  --accent:#0f766e;
-  --accent-strong:#0b5f59;
-  --accent-soft:#e5f4f2;
-  --ink:#242a33;
+  --line:#e7ebf0;
+  --line-strong:#cbd4e1;
+  --text:#182230;
+  --muted:#7b8797;
+  --accent:#5574eb;
+  --accent-strong:#4867dc;
+  --accent-soft:#edf1ff;
+  --ink:#182230;
   --ok:#16805d;
   --ok-bg:#ecfdf5;
   --ok-line:#bbf7d0;
@@ -21,13 +21,13 @@ COMMON_APP_CSS = """
   --warn-bg:#fff7ed;
   --danger:#b42318;
   --danger-bg:#fff1f0;
-  --shadow:0 1px 2px rgba(23,31,42,.05),0 10px 26px rgba(23,31,42,.06);
-  --shadow-soft:0 1px 2px rgba(23,31,42,.04);
+  --shadow:0 8px 30px rgba(28,42,68,.07);
+  --shadow-soft:0 4px 18px rgba(28,42,68,.04);
 }
 * { box-sizing:border-box; }
 body {
   margin:0;
-  font-family:system-ui,-apple-system,Segoe UI,sans-serif;
+  font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,"PingFang SC","Microsoft YaHei",sans-serif;
   background:var(--bg);
   color:var(--text);
   line-height:1.48;
@@ -39,14 +39,14 @@ header {
   justify-content:space-between;
   gap:12px;
   padding:0 24px;
-  background:var(--ink);
-  color:white;
-  border-bottom:1px solid rgba(255,255,255,.08);
+  background:#fff;
+  color:var(--text);
+  border-bottom:1px solid var(--line);
 }
 main {
-  max-width:1180px;
+  max-width:1440px;
   margin:0 auto;
-  padding:22px;
+  padding:30px;
   display:grid;
   gap:16px;
 }
@@ -54,12 +54,12 @@ section,
 .card {
   background:var(--panel);
   border:1px solid var(--line);
-  border-radius:8px;
-  padding:16px;
+  border-radius:15px;
+  padding:20px;
   box-shadow:var(--shadow-soft);
 }
-h1 { font-size:18px; margin:0; }
-h2 { font-size:16px; margin:0 0 12px; }
+h1 { font-size:20px; margin:0; letter-spacing:-.025em; }
+h2 { font-size:16px; margin:0 0 12px; letter-spacing:-.015em; }
 label { display:block; color:var(--muted); font-size:13px; margin:10px 0 5px; }
 code { color:var(--accent-strong); background:var(--accent-soft); border-radius:5px; padding:1px 5px; }
 input,
@@ -68,7 +68,7 @@ select {
   width:100%;
   box-sizing:border-box;
   border:1px solid var(--line);
-  border-radius:6px;
+  border-radius:9px;
   padding:10px 11px;
   font:inherit;
   background:white;
@@ -81,13 +81,13 @@ textarea:focus,
 select:focus {
   outline:0;
   border-color:var(--accent);
-  box-shadow:0 0 0 3px rgba(15,118,110,.14);
+  box-shadow:0 0 0 3px rgba(85,116,235,.14);
 }
 button {
   border:0;
   background:var(--accent);
   color:white;
-  border-radius:6px;
+  border-radius:9px;
   padding:10px 14px;
   cursor:pointer;
   font:inherit;
@@ -95,7 +95,7 @@ button {
   line-height:1.2;
   transition:background .15s, box-shadow .15s, transform .12s, opacity .15s;
 }
-button:hover { background:var(--accent-strong); box-shadow:0 6px 16px rgba(15,118,110,.18); }
+button:hover { background:var(--accent-strong); box-shadow:0 6px 16px rgba(85,116,235,.18); }
 button:active { transform:translateY(1px); }
 button.secondary { background:#eef2f6; color:var(--text); border:1px solid var(--line); }
 button.secondary:hover { background:#e3e8ee; box-shadow:none; }
@@ -151,7 +151,7 @@ pre {
   background:#11151d;
   color:#dce7f3;
   padding:12px;
-  border-radius:6px;
+  border-radius:9px;
   overflow:auto;
   max-height:520px;
   white-space:pre-wrap;

@@ -1,6 +1,14 @@
+FROM node:22.14.0-bookworm-slim AS frontend-build
+
+WORKDIR /app/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
 FROM mcr.microsoft.com/playwright/python:v1.56.0-noble
 
-ARG APP_VERSION=v1.8.2-dev
+ARG APP_VERSION=v2.0.0
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -22,7 +30,9 @@ COPY _src/x-auto-download-nas-main /opt/nas-auto/x
 COPY _src/pixiv-auto-download-nas-main /opt/nas-auto/pixiv
 COPY _src/douyin-f2-auto-main /opt/nas-auto/douyin
 COPY _common/nas_auto_common /opt/nas-auto/nas_auto_common
+COPY _integrated/nas_auto /opt/nas-auto/nas_auto
 COPY _integrated/integrated_server.py /opt/nas-auto/integrated_server.py
+COPY --from=frontend-build /app/frontend/dist /opt/nas-auto/frontend/dist
 
 EXPOSE 14001
 

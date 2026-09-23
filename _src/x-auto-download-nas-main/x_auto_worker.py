@@ -1620,7 +1620,7 @@ class App:
             "local_media": self.local_media_counts(),
             "config": self.config,
             "runs": self.store.recent_runs(),
-            "tweets": self.store.recent_tweets(),
+            "tweets": self.store.recent_tweets(1000),
             "manual_failed": self.store.manual_failed_tweets(),
             "logs": self.log.lines(),
             "last_run_message": self.last_run_message,

@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-      - dev
+      - codex
     tags:
       - "v*.*.*"
   workflow_dispatch:
@@ -14,8 +14,39 @@ permissions:
   packages: write
 
 jobs:
+  verify:
+    name: Verify source and frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: python -m pip install requests PyYAML pixivpy3 gallery-dl playwright
+      - name: Test Python modules
+        run: python -m unittest test_integrated.py
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.14.0"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+      - name: Build frontend
+        run: npm run build
+        working-directory: frontend
+      - name: Audit frontend dependencies
+        run: npm audit --audit-level=high
+        working-directory: frontend
+
   build:
     name: Build integrated image
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -44,8 +75,6 @@ jobs:
           tags: |
             type=ref,event=tag
             type=ref,event=branch
-            type=raw,value=${{ steps.version.outputs.version }}
-            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push
         uses: docker/build-push-action@v6

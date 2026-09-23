@@ -1336,7 +1336,7 @@ class App:
             "config": self.config,
             "progress": self.get_progress(),
             "runs": self.store.recent_runs(),
-            "artworks": self.store.recent_artworks(),
+            "artworks": self.store.recent_artworks(1000),
             "logs": self.log.lines(),
             "last_run_message": self.last_run_message,
             "last_run_error_type": self.last_run_error_type,

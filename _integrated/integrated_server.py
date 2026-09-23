@@ -19,20 +19,17 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-COMMON_PATH = Path(__file__).resolve().parents[1] / "_common"
-if COMMON_PATH.exists():
-    sys.path.insert(0, str(COMMON_PATH))
-
-try:
-    from nas_auto_common.ui import app_css
-except ModuleNotFoundError:
-    def app_css(extra: str = "") -> str:
-        return extra
+from nas_auto.adapters import ServiceAdapterRegistry
 
 
 PORT = int(os.environ.get("PORT", "14001"))
 ROOT = Path("/opt/nas-auto")
-APP_VERSION = os.environ.get("APP_VERSION", "v1.8.2-dev")
+APP_VERSION = os.environ.get("APP_VERSION", "v2.0.0")
+_frontend_candidates = (
+    Path(__file__).resolve().parent / "frontend" / "dist",
+    Path(__file__).resolve().parents[1] / "frontend" / "dist",
+)
+FRONTEND_DIST = Path(os.environ.get("FRONTEND_DIST", next((str(path) for path in _frontend_candidates if path.exists()), str(_frontend_candidates[0]))))
 XHS_QUEUE_FILE = Path(os.environ.get("XHS_QUEUE_FILE", "/queue/xhs/links.txt"))
 MAX_XHS_API_BODY_BYTES = 5_000_000
 DOUYIN_CONFIG_PATH = Path(os.environ.get("DOUYIN_CONFIG_PATH", "/config/douyin/config.json"))
@@ -74,6 +71,7 @@ SERVICES = {
     "pixiv": {"name": "Pixiv", "port": 18083, "path": "/pixiv/", "config": "/config/pixiv/config.json"},
     "douyin": {"name": "抖音", "port": 18084, "path": "/douyin/", "config": "/config/douyin/config.json"},
 }
+SERVICE_ADAPTERS = ServiceAdapterRegistry(SERVICES)
 
 DOUYIN_REFERENCE_COOKIE_ORDER = (
     "UIFID_TEMP",
@@ -342,12 +340,6 @@ def wait_for_port(name: str, host: str, port: int, timeout_seconds: int = 90) ->
     return False
 
 
-def is_port_open(host: str, port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.settimeout(0.5)
-        return sock.connect_ex((host, port)) == 0
-
-
 def start_children() -> None:
     ensure_configs()
     wait_for_port("xhs-api", os.environ.get("XHS_API_HOST", "xhs-api"), int(os.environ.get("XHS_API_PORT", "5556")))
@@ -533,20 +525,6 @@ def sync_douyin_job_configs(cookie_text: str) -> None:
         (config_dir / f"{job_key(job, index)}.yaml").write_text(render_douyin_job_yaml(payload), encoding="utf-8")
 
 
-def query_child_status(svc: dict[str, Any]) -> dict[str, Any]:
-    conn = http.client.HTTPConnection("127.0.0.1", int(svc["port"]), timeout=1.5)
-    try:
-        conn.request("GET", "/api/status")
-        resp = conn.getresponse()
-        if resp.status != 200:
-            return {}
-        return json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
-    except (OSError, TimeoutError, http.client.HTTPException, json.JSONDecodeError):
-        return {}
-    finally:
-        conn.close()
-
-
 def summarize_child_status(child: dict[str, Any]) -> dict[str, Any]:
     progress = child.get("progress") if isinstance(child.get("progress"), dict) else {}
     counts = child.get("counts") if isinstance(child.get("counts"), dict) else {}
@@ -573,8 +551,9 @@ def summarize_child_status(child: dict[str, Any]) -> dict[str, Any]:
 def service_status() -> dict[str, Any]:
     services: list[dict[str, Any]] = []
     for key, svc in SERVICES.items():
-        ready = is_port_open("127.0.0.1", int(svc["port"]))
-        child = query_child_status(svc) if ready else {}
+        adapter = SERVICE_ADAPTERS[key]
+        ready = adapter.ready()
+        child = adapter.status() if ready else {}
         services.append(
             {
                 "key": key,
@@ -659,31 +638,11 @@ def append_xhs_queue_links(urls: list[str]) -> dict[str, Any]:
 
 
 def trigger_xhs_worker_run() -> dict[str, Any]:
-    svc = SERVICES["xhs"]
-    conn = http.client.HTTPConnection("127.0.0.1", int(svc["port"]), timeout=10)
-    try:
-        conn.request("POST", "/api/run-now", body=b"{}", headers={"Content-Type": "application/json"})
-        resp = conn.getresponse()
-        body = resp.read().decode("utf-8", errors="replace")
-        return {"ok": 200 <= resp.status < 300, "status": resp.status, "body": body[:500]}
-    except (OSError, TimeoutError, http.client.HTTPException) as error:
-        return {"ok": False, "status": 0, "body": str(error)}
-    finally:
-        conn.close()
+    return SERVICE_ADAPTERS["xhs"].run_now()
 
 
 def trigger_service_run(service_key: str) -> dict[str, Any]:
-    svc = SERVICES[service_key]
-    conn = http.client.HTTPConnection("127.0.0.1", int(svc["port"]), timeout=10)
-    try:
-        conn.request("POST", "/api/run-now", body=b"{}", headers={"Content-Type": "application/json"})
-        resp = conn.getresponse()
-        body = resp.read().decode("utf-8", errors="replace")
-        return {"ok": 200 <= resp.status < 300, "status": resp.status, "body": body[:500]}
-    except (OSError, TimeoutError, http.client.HTTPException) as error:
-        return {"ok": False, "status": 0, "body": str(error)}
-    finally:
-        conn.close()
+    return SERVICE_ADAPTERS[service_key].run_now()
 
 
 def post_xhs_worker(path: str, payload: dict[str, Any], timeout: int = 30) -> dict[str, Any]:
@@ -708,196 +667,47 @@ def post_xhs_worker(path: str, payload: dict[str, Any], timeout: int = 30) -> di
 
 
 def page(message: str = "") -> bytes:
-    status_data = service_status()
-    nav_items = ""
-    overview_rows = ""
-    ready_count = 0
-    for svc in status_data["services"]:
-        key = str(svc["key"])
-        ready = bool(svc["ready"])
-        if ready:
-            ready_count += 1
-        cls = "ready" if ready else "starting"
-        label = "已就绪" if ready else "启动中"
-        nav_items += (
-            f'<a class="nav-item {cls}" href="{svc["path"]}" data-service="{key}">'
-            f'<span>{html.escape(svc["name"])}</span><em data-status="{key}">{label}</em></a>'
-        )
-        run_label = "运行中" if svc.get("running") else ("空闲" if ready else "未就绪")
-        overview_rows += (
-            f'<tr data-overview-row="{key}">'
-            f'<td>{html.escape(str(svc["name"]))}</td>'
-            f'<td><span class="pill {cls}" data-ready-cell>{label}</span></td>'
-            f'<td data-running-cell>{run_label}</td>'
-            f'<td data-current-cell>{html.escape(str(svc.get("current") or "-"))}</td>'
-            f'<td data-next-cell data-next-run-at="{html.escape(str(svc.get("next_run_at") or ""))}">-</td>'
-            f'<td data-extra-cell>{html.escape(str(svc.get("extra") or ""))}</td>'
-            f'</tr>'
-        )
-    shell_css = app_css(
-        """
-body{background:#f3f5f7}
-.app-shell{min-height:100vh;display:grid;grid-template-columns:268px minmax(0,1fr)}
-.shell-sidebar{height:100vh;position:sticky;top:0;background:#20242c;color:#f8fafc;padding:18px;display:flex;flex-direction:column;gap:18px;border-right:1px solid rgba(255,255,255,.08)}
-.brand{display:grid;gap:4px;padding:4px 2px 12px;border-bottom:1px solid rgba(255,255,255,.08)}
-.brand strong{font-size:21px;letter-spacing:0}.brand span{color:#aeb7c4;font-size:12px}
-.nav-group{display:grid;gap:8px}.nav-title{color:#8f9aa8;font-size:12px;padding:0 10px}
-.nav-item{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;background:transparent;color:#eef2f6;text-decoration:none;text-align:left;font:inherit;border:1px solid transparent;border-radius:8px;padding:10px;cursor:pointer}
-.nav-item:hover,.nav-item.active{background:#2b3039;border-color:#3a424d}
-.nav-item.active{box-shadow:inset 3px 0 0 var(--accent)}
-.nav-item em{font-style:normal;color:#aeb7c4;font-size:12px}.nav-item.ready em{color:#90e2bd}.nav-item.starting em{color:#f3c969}
-.workspace{min-width:0}.topbar{background:rgba(255,255,255,.94);color:var(--text);border-bottom:1px solid var(--line);min-height:64px;backdrop-filter:blur(8px)}
-.topbar .status{margin-left:auto}.shell-main{max-width:none;padding:24px;align-content:start}
-.hero-panel{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;align-items:end;background:#fff;border:1px solid var(--line);border-radius:8px;padding:22px;box-shadow:var(--shadow)}
-.hero-panel h1{font-size:25px}.hero-panel p{margin:8px 0 0}.summary-strip{display:flex;gap:10px;flex-wrap:wrap}
-.summary-card{min-width:132px;border:1px solid var(--line);border-radius:8px;background:var(--panel-soft);padding:12px}
-.summary-card span{display:block;color:var(--muted);font-size:12px}.summary-card strong{display:block;margin-top:4px;font-size:19px}
-.dashboard-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(320px,.65fr);gap:16px}
-.overview-table{overflow:auto}.overview-table td:nth-child(4),.overview-table td:nth-child(6){max-width:360px;overflow-wrap:anywhere}
-.service-pane{display:none;height:calc(100vh - 112px);min-height:640px;padding:0;overflow:hidden}.service-pane.active{display:block}
-.service-frame{width:100%;height:100%;border:0;background:#fff}
-.dashboard-view.hidden{display:none}
-pre{max-height:420px}
-@media(max-width:980px){.app-shell{grid-template-columns:1fr}.shell-sidebar{height:auto;position:static}.dashboard-grid{grid-template-columns:1fr}.shell-main{padding:14px}.service-pane{height:72vh;min-height:520px}}
-"""
-    )
-    script = """
-const $ = (id) => document.getElementById(id);
-const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
-const dashboardView = $("dashboardView");
-const servicePane = $("servicePane");
-const serviceFrame = $("serviceFrame");
+    """Return the separately built frontend shell.
 
-function showDashboard() {
-  dashboardView.classList.remove("hidden");
-  servicePane.classList.remove("active");
-  document.querySelectorAll(".nav-item").forEach((item) => item.classList.remove("active"));
-  $("dashboardNav").classList.add("active");
-}
+    Keeping this boundary in the Python server means the API and worker
+    adapters can evolve independently from the visual application. The
+    legacy server-rendered dashboard remains available as a development
+    fallback when the frontend has not been built yet.
+    """
+    index_path = FRONTEND_DIST / "index.html"
+    if message:
+        return (
+            "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\">"
+            f"<title>NAS Auto Download</title><body><h1>NAS Auto Download</h1>"
+            f"<p>{html.escape(message)}</p></body></html>"
+        ).encode("utf-8")
+    if index_path.exists():
+        return index_path.read_bytes()
+    return (
+        "<!doctype html><html lang=\"zh-CN\"><meta charset=\"utf-8\">"
+        "<title>NAS Auto Download</title><body><h1>NAS Auto Download</h1>"
+        "<p>前端资源尚未构建，请重新构建集成镜像。</p></body></html>"
+    ).encode("utf-8")
 
-function openService(url, item) {
-  dashboardView.classList.add("hidden");
-  servicePane.classList.add("active");
-  serviceFrame.src = url;
-  document.querySelectorAll(".nav-item").forEach((nav) => nav.classList.remove("active"));
-  item.classList.add("active");
-}
 
-document.querySelectorAll("[data-service]").forEach((item) => {
-  item.addEventListener("click", (event) => {
-    event.preventDefault();
-    openService(item.getAttribute("href"), item);
-  });
-});
-document.querySelectorAll("[data-open-service]").forEach((item) => {
-  item.addEventListener("click", (event) => {
-    event.preventDefault();
-    openService(item.getAttribute("href"), document.querySelector(`.nav-item[data-service="${item.dataset.openService}"]`) || item);
-  });
-});
-$("dashboardNav").addEventListener("click", showDashboard);
-
-function formatCountdown(value) {
-  if (!value) return "未排程";
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) return value;
-  const seconds = Math.max(0, Math.floor((timestamp - Date.now()) / 1000));
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const rest = seconds % 60;
-  if (hours > 0) return `${hours}小时${minutes}分`;
-  if (minutes > 0) return `${minutes}分${rest}秒`;
-  return `${rest}秒`;
-}
-
-function refreshCountdowns() {
-  document.querySelectorAll("[data-next-cell]").forEach((cell) => {
-    cell.textContent = formatCountdown(cell.dataset.nextRunAt || "");
-  });
-}
-
-async function refreshStatus() {
-  try {
-    const resp = await fetch("/api/status", {cache:"no-store"});
-    const data = await resp.json();
-    $("versionText").textContent = data.version || "";
-    $("logBox").textContent = (data.logs || []).join("\\n");
-    let ready = 0;
-    for (const svc of data.services || []) {
-      if (svc.ready) ready += 1;
-      const label = svc.ready ? "已就绪" : "启动中";
-      const nav = document.querySelector(`[data-status="${svc.key}"]`);
-      if (nav) nav.textContent = label;
-      const navItem = document.querySelector(`.nav-item[data-service="${svc.key}"]`);
-      if (navItem) {
-        navItem.classList.toggle("ready", !!svc.ready);
-        navItem.classList.toggle("starting", !svc.ready);
-      }
-      const row = document.querySelector(`[data-overview-row="${svc.key}"]`);
-      if (row) {
-        const readyCell = row.querySelector("[data-ready-cell]");
-        if (readyCell) {
-          readyCell.textContent = label;
-          readyCell.classList.toggle("ready", !!svc.ready);
-          readyCell.classList.toggle("starting", !svc.ready);
-        }
-        const runCell = row.querySelector("[data-running-cell]");
-        if (runCell) runCell.textContent = svc.running ? "运行中" : (svc.ready ? "空闲" : "未就绪");
-        const currentCell = row.querySelector("[data-current-cell]");
-        if (currentCell) currentCell.textContent = svc.current || "-";
-        const nextCell = row.querySelector("[data-next-cell]");
-        if (nextCell) nextCell.dataset.nextRunAt = svc.next_run_at || "";
-        const extraCell = row.querySelector("[data-extra-cell]");
-        if (extraCell) extraCell.textContent = svc.extra || "";
-      }
+def frontend_asset(path: str) -> tuple[bytes, str] | None:
+    """Read a built frontend asset without allowing path traversal."""
+    relative = path.removeprefix("/assets/")
+    if not relative or "/" in relative or "\\" in relative or relative in {".", ".."}:
+        return None
+    asset = FRONTEND_DIST / "assets" / relative
+    if not asset.is_file():
+        return None
+    content_types = {
+        ".js": "text/javascript; charset=utf-8",
+        ".css": "text/css; charset=utf-8",
+        ".svg": "image/svg+xml",
+        ".png": "image/png",
+        ".ico": "image/x-icon",
+        ".woff": "font/woff",
+        ".woff2": "font/woff2",
     }
-    $("readyText").textContent = `${ready}/${(data.services || []).length}`;
-    refreshCountdowns();
-  } catch (_error) {}
-}
-refreshStatus();
-setInterval(refreshStatus, 3000);
-setInterval(refreshCountdowns, 1000);
-"""
-    body = f"""<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>NAS Auto Download</title>
-<style>
-{shell_css}
-</style></head><body>
-<div class="app-shell">
-<aside class="shell-sidebar">
-  <div class="brand"><strong>NAS Auto</strong><span id="versionText">{html.escape(APP_VERSION)}</span></div>
-  <nav class="nav-group">
-    <div class="nav-title">工作区</div>
-    <button class="nav-item active" id="dashboardNav" type="button"><span>总览</span><em>当前</em></button>
-    {nav_items}
-  </nav>
-</aside>
-<div class="workspace">
-  <header class="topbar"><h1>NAS Auto Download</h1><div class="status"><span class="pill">服务 <span id="readyText">{ready_count}/{len(SERVICES)}</span></span></div></header>
-  <main class="shell-main">
-    <div class="dashboard-view" id="dashboardView">
-      {f'<section class="ok">{html.escape(message)}</section>' if message else ''}
-      <section class="hero-panel">
-        <div><h1>统一下载控制台</h1><p class="muted">侧边栏切换小红书、X、Pixiv、抖音；Cookie 分别在各项目页面手动粘贴保存。</p></div>
-        <div class="summary-strip">
-          <div class="summary-card"><span>服务就绪</span><strong>{ready_count}/{len(SERVICES)}</strong></div>
-          <div class="summary-card"><span>版本</span><strong>{html.escape(APP_VERSION)}</strong></div>
-        </div>
-      </section>
-      <div class="dashboard-grid">
-        <section><h2>运行总览</h2><div class="overview-table"><table><thead><tr><th>项目</th><th>服务</th><th>运行</th><th>当前</th><th>下次运行倒计时</th><th>补充</th></tr></thead><tbody id="overviewBody">{overview_rows}</tbody></table></div></section>
-        <section><h2>最近日志</h2><pre id="logBox">{html.escape(chr(10).join(log_lines[-500:]))}</pre></section>
-      </div>
-    </div>
-    <section class="service-pane" id="servicePane"><iframe class="service-frame" id="serviceFrame" name="serviceFrame" title="服务页面"></iframe></section>
-  </main>
-</div>
-</div>
-<script>{script}</script>
-</body></html>"""
-    return body.encode("utf-8")
+    return asset.read_bytes(), content_types.get(asset.suffix.lower(), "application/octet-stream")
 
 
 def rewrite_html(prefix: str, body: bytes, content_type: str) -> bytes:
@@ -977,6 +787,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         split = urlsplit(self.path)
+        if split.path.startswith("/assets/"):
+            asset = frontend_asset(split.path)
+            if asset is None:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            data, content_type = asset
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if split.path == "/api/status":
             self.send_json_payload(service_status())
             return

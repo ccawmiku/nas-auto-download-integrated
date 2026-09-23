@@ -5,6 +5,7 @@ import zipfile
 import json
 import sqlite3
 from pathlib import Path
+from unittest.mock import patch
 
 import requests
 import yaml
@@ -42,19 +43,37 @@ from xhs_auto_worker import (
 
 class IntegratedPageTests(unittest.TestCase):
     def test_home_page_includes_version_and_service_cards(self) -> None:
-        body = integrated_server.page().decode("utf-8")
-        self.assertIn(integrated_server.APP_VERSION, body)
-        self.assertIn("小红书", body)
-        self.assertIn("Pixiv", body)
-        self.assertIn("抖音", body)
-        self.assertIn("运行总览", body)
-        self.assertIn("下次运行倒计时", body)
-        self.assertNotIn("上传 cookies.txt", body)
-        self.assertNotIn("Cookie 导入", body)
-        self.assertNotIn("预览差异", body)
-        self.assertNotIn('value="xhs"', body)
-        self.assertIn("overflow-wrap:anywhere", body.replace(" ", ""))
-        self.assertNotIn("__APP_STYLE__", body)
+        index = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+        app = (ROOT / "frontend" / "src" / "main.tsx").read_text(encoding="utf-8")
+        styles = (ROOT / "frontend" / "src" / "styles.css").read_text(encoding="utf-8")
+        self.assertIn('<div id="root"></div>', index)
+        self.assertIn("运行总览", app)
+        self.assertIn("小红书", app)
+        self.assertIn("Pixiv", app)
+        self.assertIn("抖音", app)
+        self.assertIn("任务中心", app)
+        self.assertIn("运行日志", app)
+        self.assertIn('aria-label="折叠侧边栏"', app)
+        self.assertIn("grid-template-columns", styles)
+        self.assertIn("@media(max-width:720px)", styles)
+
+    def test_frontend_dist_is_served_when_built(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            assets = Path(tmp) / "assets"
+            assets.mkdir()
+            (assets / "app.js").write_text("console.log('ok')", encoding="utf-8")
+            with patch.object(integrated_server, "FRONTEND_DIST", Path(tmp)):
+                served = integrated_server.frontend_asset("/assets/app.js")
+                self.assertEqual(served, (b"console.log('ok')", "text/javascript; charset=utf-8"))
+                self.assertIsNone(integrated_server.frontend_asset("/assets/../secret"))
+
+    def test_status_contract_keeps_platform_adapters_independent(self) -> None:
+        status = integrated_server.service_status()
+        self.assertEqual({item["key"] for item in status["services"]}, {"xhs", "x", "pixiv", "douyin"})
+        for service in status["services"]:
+            self.assertIn("running", service)
+            self.assertIn("current", service)
+            self.assertIn("next_run_at", service)
 
     def test_proxy_rewrite_does_not_inject_back_bar(self) -> None:
         body = integrated_server.rewrite_html("/x/", b"<html><body><main>ok</main></body></html>", "text/html")

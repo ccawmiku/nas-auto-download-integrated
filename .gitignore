@@ -13,3 +13,5 @@ f2库代码参考/
 *.tsbuildinfo
 _frontend/integrated/node_modules/
 _frontend/integrated/dist/
+frontend/node_modules/
+frontend/dist/
